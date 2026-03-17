@@ -1,0 +1,1287 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TRPG 團錄轉寫器</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@400;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/docx@8.5.0/build/index.js"></script>
+  <style>
+    :root {
+      --color-bg:      #1A1A2E;
+      --color-surface: #16213E;
+      --color-primary: #4A3F6B;
+      --color-accent:  #C9A84C;
+      --color-text:    #E0E0E0;
+      --color-success: #4CAF50;
+      --color-error:   #F44336;
+      --color-muted:   #9E9E9E;
+      --radius:        8px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--color-bg);
+      color: var(--color-text);
+      font-family: 'Noto Sans TC', Arial, sans-serif;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--color-surface);
+      border-bottom: 1px solid var(--color-primary);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .logo {
+      font-family: 'Noto Serif TC', Georgia, serif;
+      font-size: 1.2rem;
+      color: var(--color-accent);
+      font-weight: 700;
+      letter-spacing: 0.05em;
+    }
+
+    .btn-icon {
+      background: none;
+      border: 1px solid var(--color-primary);
+      color: var(--color-text);
+      padding: 6px 12px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-size: 0.9rem;
+      transition: background 0.2s;
+    }
+    .btn-icon:hover { background: var(--color-primary); }
+
+    /* ── Main ── */
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 32px 20px;
+    }
+
+    section { display: none; }
+    section.active { display: block; }
+
+    /* ── Card ── */
+    .card {
+      background: var(--color-surface);
+      border: 1px solid var(--color-primary);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+
+    .card-title {
+      font-family: 'Noto Serif TC', serif;
+      font-size: 1.1rem;
+      color: var(--color-accent);
+      margin-bottom: 16px;
+    }
+
+    /* ── Form elements ── */
+    label {
+      display: block;
+      font-size: 0.85rem;
+      color: var(--color-muted);
+      margin-bottom: 6px;
+    }
+
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      background: var(--color-bg);
+      border: 1px solid var(--color-primary);
+      color: var(--color-text);
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      font-size: 0.95rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input[type="text"]:focus,
+    input[type="password"]:focus { border-color: var(--color-accent); }
+
+    .input-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+
+    /* ── Buttons ── */
+    .btn {
+      padding: 10px 20px;
+      border-radius: var(--radius);
+      font-family: inherit;
+      font-size: 0.95rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.2s, transform 0.1s;
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-primary {
+      background: var(--color-accent);
+      color: #1A1A2E;
+    }
+    .btn-primary:hover:not(:disabled) { opacity: 0.9; }
+
+    .btn-secondary {
+      background: var(--color-primary);
+      color: var(--color-text);
+    }
+    .btn-secondary:hover:not(:disabled) { opacity: 0.85; }
+
+    .btn-ghost {
+      background: none;
+      border: 1px solid var(--color-primary);
+      color: var(--color-text);
+    }
+    .btn-ghost:hover:not(:disabled) { background: var(--color-primary); }
+
+    .btn-danger {
+      background: none;
+      border: 1px solid var(--color-error);
+      color: var(--color-error);
+      padding: 6px 10px;
+      font-size: 0.85rem;
+    }
+    .btn-danger:hover { background: var(--color-error); color: #fff; }
+
+    .btn-sm {
+      padding: 6px 12px;
+      font-size: 0.85rem;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 20px;
+    }
+
+    /* ── API Key field ── */
+    .key-field {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .key-field input { flex: 1; }
+
+    /* ── Character table ── */
+    .char-table-header {
+      display: grid;
+      grid-template-columns: 130px 1fr 1fr 44px;
+      gap: 8px;
+      font-size: 0.8rem;
+      color: var(--color-muted);
+      padding: 0 0 8px 0;
+      border-bottom: 1px solid var(--color-primary);
+      margin-bottom: 8px;
+    }
+
+    .char-row {
+      display: grid;
+      grid-template-columns: 130px 1fr 1fr 44px;
+      gap: 8px;
+      margin-bottom: 8px;
+      align-items: center;
+    }
+
+    /* ── Upload zone ── */
+    .upload-zone {
+      border: 2px dashed var(--color-primary);
+      border-radius: var(--radius);
+      padding: 60px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .upload-zone:hover,
+    .upload-zone.dragover {
+      border-color: var(--color-accent);
+      background: rgba(201, 168, 76, 0.05);
+    }
+
+    .upload-icon { font-size: 2.5rem; margin-bottom: 12px; }
+    .upload-hint { color: var(--color-muted); font-size: 0.85rem; margin-top: 8px; }
+
+    .file-info {
+      background: var(--color-bg);
+      border: 1px solid var(--color-primary);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      margin-top: 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 0.9rem;
+    }
+    .file-info .file-name { font-weight: 500; }
+    .file-info .file-size { color: var(--color-muted); font-size: 0.8rem; }
+
+    /* ── Progress steps ── */
+    .steps { list-style: none; }
+
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 0;
+      border-bottom: 1px solid rgba(74, 63, 107, 0.4);
+    }
+    .step:last-child { border-bottom: none; }
+
+    .step-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1rem;
+      flex-shrink: 0;
+      border: 2px solid var(--color-primary);
+    }
+    .step.pending .step-icon  { color: var(--color-muted); }
+    .step.processing .step-icon { border-color: var(--color-accent); }
+    .step.done .step-icon     { background: var(--color-success); border-color: var(--color-success); color: #fff; }
+    .step.error .step-icon    { background: var(--color-error); border-color: var(--color-error); color: #fff; }
+
+    .step-label { flex: 1; font-size: 0.95rem; }
+    .step-detail { font-size: 0.8rem; color: var(--color-muted); margin-top: 2px; }
+    .step.error .step-detail { color: var(--color-error); }
+
+    /* spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid var(--color-accent);
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    /* ── Confirm view ── */
+    .transcript-preview {
+      background: var(--color-bg);
+      border: 1px solid var(--color-primary);
+      border-radius: var(--radius);
+      padding: 14px;
+      max-height: 260px;
+      overflow-y: auto;
+      font-size: 0.85rem;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      color: var(--color-muted);
+      margin-top: 8px;
+    }
+
+    /* ── Result view ── */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 16px;
+    }
+    .tab {
+      padding: 8px 16px;
+      border-radius: var(--radius) var(--radius) 0 0;
+      cursor: pointer;
+      background: var(--color-bg);
+      border: 1px solid var(--color-primary);
+      border-bottom: none;
+      font-size: 0.9rem;
+      color: var(--color-muted);
+      transition: background 0.2s;
+    }
+    .tab.active {
+      background: var(--color-surface);
+      color: var(--color-accent);
+      border-bottom: 1px solid var(--color-surface);
+    }
+
+    .tab-content {
+      background: var(--color-surface);
+      border: 1px solid var(--color-primary);
+      border-radius: 0 var(--radius) var(--radius) var(--radius);
+      padding: 16px;
+      max-height: 420px;
+      overflow-y: auto;
+    }
+
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    .result-text {
+      font-family: 'Noto Serif TC', Georgia, serif;
+      font-size: 0.9rem;
+      line-height: 1.9;
+      white-space: pre-wrap;
+    }
+
+    .download-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    .download-grid .btn { width: 100%; text-align: left; }
+
+    /* ── Alert / error ── */
+    .alert {
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      font-size: 0.9rem;
+      margin-top: 12px;
+      display: none;
+    }
+    .alert.error { background: rgba(244, 67, 54, 0.15); border: 1px solid var(--color-error); color: #ff8a80; }
+    .alert.warn  { background: rgba(255, 193, 7, 0.1); border: 1px solid #FFC107; color: #FFD54F; }
+    .alert.info  { background: rgba(74, 63, 107, 0.3); border: 1px solid var(--color-primary); color: var(--color-muted); }
+    .alert.show  { display: block; }
+
+    /* ── Misc ── */
+    .section-title {
+      font-family: 'Noto Serif TC', serif;
+      font-size: 1.4rem;
+      color: var(--color-accent);
+      margin-bottom: 6px;
+    }
+    .section-sub {
+      color: var(--color-muted);
+      font-size: 0.88rem;
+      margin-bottom: 24px;
+    }
+
+    hr.divider {
+      border: none;
+      border-top: 1px solid var(--color-primary);
+      margin: 20px 0;
+    }
+
+    .text-muted { color: var(--color-muted); }
+    .text-accent { color: var(--color-accent); }
+    .mt-8  { margin-top: 8px; }
+    .mt-12 { margin-top: 12px; }
+    .mt-16 { margin-top: 16px; }
+
+    /* retry button inside step */
+    .step-retry {
+      font-size: 0.8rem;
+      padding: 4px 10px;
+      border-radius: 4px;
+      background: none;
+      border: 1px solid var(--color-error);
+      color: var(--color-error);
+      cursor: pointer;
+    }
+    .step-retry:hover { background: var(--color-error); color: #fff; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">⚔ TRPG 團錄轉寫器</div>
+  <button class="btn-icon" id="btn-settings">⚙ 設定</button>
+</header>
+
+<main>
+
+  <!-- ══════════════ SETUP ══════════════ -->
+  <section id="view-setup">
+    <div class="section-title">初始設定</div>
+    <div class="section-sub">填入 Gemini API Key 並設定預設角色對照表，設定會存於本地瀏覽器中。</div>
+
+    <div class="card">
+      <div class="card-title">🔑 Gemini API Key</div>
+      <label for="input-key">API Key（存於本地，不會傳至任何第三方伺服器）</label>
+      <div class="key-field">
+        <input type="password" id="input-key" placeholder="請輸入 Gemini API Key…">
+        <button class="btn btn-ghost btn-sm" id="btn-toggle-key">顯示</button>
+      </div>
+      <div class="alert error" id="alert-key">請填入 API Key 才能繼續。</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">👥 預設角色對照表</div>
+      <p class="text-muted" style="font-size:0.85rem; margin-bottom:14px;">
+        設定常用角色，每次上傳音訊後可快速套用。
+      </p>
+      <div class="char-table-header">
+        <span>說話者代號</span>
+        <span>角色名稱</span>
+        <span>玩家名稱（選填）</span>
+        <span></span>
+      </div>
+      <div id="char-rows"></div>
+      <button class="btn btn-ghost btn-sm mt-8" id="btn-add-char">＋ 新增角色</button>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-secondary" id="btn-save-config">儲存設定</button>
+      <button class="btn btn-primary" id="btn-start">開始使用 →</button>
+    </div>
+  </section>
+
+  <!-- ══════════════ UPLOAD ══════════════ -->
+  <section id="view-upload">
+    <div class="section-title">上傳錄音</div>
+    <div class="section-sub">支援 mp3、m4a、wav、ogg、flac、aac 格式，檔案大小請勿超過 20MB。</div>
+
+    <div class="card">
+      <div class="upload-zone" id="upload-zone">
+        <div class="upload-icon">🎙</div>
+        <div>拖曳音訊檔案至此，或點擊選擇</div>
+        <div class="upload-hint">mp3 · m4a · wav · ogg · flac · aac｜上限 20MB</div>
+      </div>
+      <input type="file" id="file-input" accept=".mp3,.m4a,.wav,.ogg,.flac,.aac,audio/*" style="display:none">
+
+      <div class="file-info" id="file-info" style="display:none">
+        <span style="font-size:1.4rem">🎵</span>
+        <div>
+          <div class="file-name" id="file-name"></div>
+          <div class="file-size" id="file-size"></div>
+        </div>
+      </div>
+
+      <div class="alert error" id="alert-upload"></div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-ghost" id="btn-upload-back">← 設定</button>
+      <button class="btn btn-primary" id="btn-process" disabled>開始處理 →</button>
+    </div>
+  </section>
+
+  <!-- ══════════════ PROCESSING ══════════════ -->
+  <section id="view-processing">
+    <div class="section-title">處理中</div>
+    <div class="section-sub">請勿關閉此頁面，處理完成後會自動進入下一步。</div>
+
+    <div class="card">
+      <ul class="steps" id="steps-list">
+        <li class="step pending" data-step="prepare">
+          <div class="step-icon">○</div>
+          <div>
+            <div class="step-label">準備音訊檔案</div>
+            <div class="step-detail"></div>
+          </div>
+        </li>
+        <li class="step pending" data-step="gemini1">
+          <div class="step-icon">○</div>
+          <div>
+            <div class="step-label">Gemini 語音辨識</div>
+            <div class="step-detail"></div>
+          </div>
+        </li>
+        <li class="step pending" data-step="confirm">
+          <div class="step-icon">○</div>
+          <div>
+            <div class="step-label">辨識結果確認</div>
+            <div class="step-detail"></div>
+          </div>
+        </li>
+        <li class="step pending" data-step="gemini2">
+          <div class="step-icon">○</div>
+          <div>
+            <div class="step-label">Gemini 團錄整理</div>
+            <div class="step-detail"></div>
+          </div>
+        </li>
+        <li class="step pending" data-step="generate">
+          <div class="step-icon">○</div>
+          <div>
+            <div class="step-label">生成下載檔案</div>
+            <div class="step-detail"></div>
+          </div>
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ══════════════ CONFIRM ══════════════ -->
+  <section id="view-confirm">
+    <div class="section-title">確認說話者對應</div>
+    <div class="section-sub">Gemini 辨識出以下說話者，請確認或修改對應的角色名稱。</div>
+
+    <div class="card">
+      <div class="card-title">👥 說話者對應</div>
+      <div class="char-table-header">
+        <span>說話者代號</span>
+        <span>角色名稱</span>
+        <span>玩家名稱（選填）</span>
+        <span></span>
+      </div>
+      <div id="confirm-char-rows"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">📄 逐字稿預覽</div>
+      <div class="transcript-preview" id="transcript-preview"></div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btn-confirm">確認並產生團錄 →</button>
+    </div>
+  </section>
+
+  <!-- ══════════════ RESULT ══════════════ -->
+  <section id="view-result">
+    <div class="section-title">團錄完成</div>
+    <div class="section-sub">下方為生成的團錄，可預覽各格式並下載。</div>
+
+    <div class="tabs">
+      <div class="tab active" data-tab="markdown">Markdown</div>
+      <div class="tab" data-tab="plain">純文字</div>
+      <div class="tab" data-tab="dialogue">對話格式</div>
+    </div>
+    <div class="tab-content">
+      <div class="tab-panel active" id="tab-markdown">
+        <pre class="result-text" id="result-markdown"></pre>
+      </div>
+      <div class="tab-panel" id="tab-plain">
+        <pre class="result-text" id="result-plain"></pre>
+      </div>
+      <div class="tab-panel" id="tab-dialogue">
+        <pre class="result-text" id="result-dialogue"></pre>
+      </div>
+    </div>
+
+    <div class="download-grid">
+      <button class="btn btn-secondary" id="dl-md">📥 下載 Markdown (.md)</button>
+      <button class="btn btn-secondary" id="dl-txt">📥 下載純文字 (.txt)</button>
+      <button class="btn btn-secondary" id="dl-docx">📥 下載 Word (.docx)</button>
+      <button class="btn btn-secondary" id="dl-dialogue">📥 下載對話格式 (.txt)</button>
+    </div>
+
+    <div class="btn-row" style="margin-top:24px">
+      <button class="btn btn-ghost" id="btn-reprocess">🔄 重新上傳（新錄音）</button>
+      <button class="btn btn-ghost" id="btn-regen">♻ 重新整理（保留逐字稿）</button>
+    </div>
+  </section>
+
+</main>
+
+<script>
+// ════════════════════════════════════════
+// 1. 狀態物件與 localStorage 初始化
+// ════════════════════════════════════════
+
+const state = {
+  config: {
+    geminiKey: '',
+    defaultCharacters: [
+      { speakerId: 'A', characterName: '', playerName: '' },
+      { speakerId: 'B', characterName: '', playerName: '' },
+      { speakerId: 'C', characterName: '', playerName: '' },
+    ]
+  },
+
+  currentState: 'setup',
+
+  audioFile: null,
+  audioBase64: '',
+  audioMimeType: '',
+
+  rawTranscript: '',
+  detectedSpeakers: [],
+  characterMap: {},
+
+  outputs: {
+    markdown: '',
+    plain: '',
+    dialogue: '',
+  },
+
+  progress: {
+    steps: [
+      { id: 'prepare',  label: '準備音訊檔案',    status: 'pending' },
+      { id: 'gemini1',  label: 'Gemini 語音辨識', status: 'pending' },
+      { id: 'confirm',  label: '辨識結果確認',     status: 'pending' },
+      { id: 'gemini2',  label: 'Gemini 團錄整理', status: 'pending' },
+      { id: 'generate', label: '生成下載檔案',     status: 'pending' },
+    ]
+  }
+};
+
+// 載入已存設定
+(function loadConfig() {
+  const saved = localStorage.getItem('trpg_config');
+  if (saved) {
+    try { state.config = JSON.parse(saved); } catch(e) {}
+  }
+})();
+
+// ════════════════════════════════════════
+// 2. UI 切換
+// ════════════════════════════════════════
+
+function showView(name) {
+  document.querySelectorAll('main > section').forEach(s => s.classList.remove('active'));
+  document.getElementById('view-' + name).classList.add('active');
+  state.currentState = name;
+}
+
+// ════════════════════════════════════════
+// 3. 設定頁渲染
+// ════════════════════════════════════════
+
+function renderCharRows() {
+  const container = document.getElementById('char-rows');
+  container.innerHTML = '';
+  state.config.defaultCharacters.forEach((ch, i) => {
+    const row = document.createElement('div');
+    row.className = 'char-row';
+    row.innerHTML = `
+      <input type="text" class="char-speakerid" value="${ch.speakerId}" placeholder="Speaker A">
+      <input type="text" class="char-name"      value="${ch.characterName}" placeholder="角色名稱">
+      <input type="text" class="char-player"    value="${ch.playerName}" placeholder="玩家名稱（選填）">
+      <button class="btn btn-danger btn-sm" data-idx="${i}">✕</button>
+    `;
+    container.appendChild(row);
+  });
+  // delete buttons
+  container.querySelectorAll('.btn-danger').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.config.defaultCharacters.splice(+btn.dataset.idx, 1);
+      renderCharRows();
+    });
+  });
+}
+
+function collectCharRows() {
+  const rows = document.querySelectorAll('#char-rows .char-row');
+  state.config.defaultCharacters = Array.from(rows).map(row => ({
+    speakerId: row.querySelector('.char-speakerid').value.trim(),
+    characterName: row.querySelector('.char-name').value.trim(),
+    playerName: row.querySelector('.char-player').value.trim(),
+  })).filter(ch => ch.speakerId);
+}
+
+function initSetupView() {
+  document.getElementById('input-key').value = state.config.geminiKey || '';
+  renderCharRows();
+}
+
+// ════════════════════════════════════════
+// 4. 音訊處理
+// ════════════════════════════════════════
+
+const mimeTypes = {
+  'mp3':  'audio/mp3',
+  'mp4':  'audio/mp4',
+  'm4a':  'audio/mp4',
+  'wav':  'audio/wav',
+  'ogg':  'audio/ogg',
+  'flac': 'audio/flac',
+  'aac':  'audio/aac',
+};
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function handleFileSelect(file) {
+  const alertEl = document.getElementById('alert-upload');
+  alertEl.className = 'alert';
+
+  if (!file) return;
+
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!mimeTypes[ext]) {
+    alertEl.textContent = `不支援的格式：${ext}。請上傳 mp3、m4a、wav、ogg、flac 或 aac 檔案。`;
+    alertEl.className = 'alert error show';
+    return;
+  }
+
+  if (file.size > 20 * 1024 * 1024) {
+    alertEl.textContent = `檔案過大（${formatBytes(file.size)}，上限 20MB）。建議先使用音訊軟體壓縮後再上傳。`;
+    alertEl.className = 'alert error show';
+    return;
+  }
+
+  state.audioFile = file;
+  state.audioMimeType = mimeTypes[ext];
+
+  document.getElementById('file-name').textContent = file.name;
+  document.getElementById('file-size').textContent = formatBytes(file.size);
+  document.getElementById('file-info').style.display = 'flex';
+  document.getElementById('btn-process').disabled = false;
+}
+
+// ════════════════════════════════════════
+// 5. 進度條
+// ════════════════════════════════════════
+
+function setStepStatus(stepId, status, detail) {
+  const li = document.querySelector(`[data-step="${stepId}"]`);
+  if (!li) return;
+  li.className = 'step ' + status;
+  const iconEl = li.querySelector('.step-icon');
+  const detailEl = li.querySelector('.step-detail');
+
+  if (status === 'pending')    iconEl.innerHTML = '○';
+  if (status === 'done')       iconEl.innerHTML = '✓';
+  if (status === 'error')      iconEl.innerHTML = '✗';
+  if (status === 'processing') iconEl.innerHTML = '<div class="spinner"></div>';
+
+  if (detail !== undefined) detailEl.textContent = detail;
+
+  // update internal state
+  const step = state.progress.steps.find(s => s.id === stepId);
+  if (step) step.status = status;
+}
+
+function resetSteps() {
+  state.progress.steps.forEach(s => setStepStatus(s.id, 'pending', ''));
+}
+
+// ════════════════════════════════════════
+// 6. Gemini API 呼叫
+// ════════════════════════════════════════
+
+const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent';
+
+async function geminiRequest(body) {
+  const res = await fetch(GEMINI_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': state.config.geminiKey,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errMap = {
+      429: 'API 請求頻率超限，請稍後重試。',
+      400: '音訊格式不支援或請求格式錯誤。',
+      403: 'API Key 無效或權限不足，請至設定頁重新填入。',
+    };
+    const msg = errMap[res.status] || `API 錯誤 (HTTP ${res.status})`;
+    throw new Error(msg);
+  }
+
+  const data = await res.json();
+  return data.candidates[0].content.parts[0].text;
+}
+
+// Stage 1 — 語音辨識
+async function runStage1() {
+  const body = {
+    contents: [{
+      parts: [
+        {
+          inline_data: {
+            mime_type: state.audioMimeType,
+            data: state.audioBase64,
+          }
+        },
+        {
+          text: `請將這段錄音完整轉成逐字稿。這是一段桌上角色扮演遊戲（TRPG）的錄音，有多位玩家與主持人（GM）在說話。
+
+格式要求：
+1. 每次換人說話就換一行
+2. 每行開頭加上說話者標籤，格式為 [Speaker A]、[Speaker B] 等，依照聲線區分
+3. 保留所有發言，包含骰子判定、規則討論、角色扮演對話
+4. 如果有明顯的環境雜音或無意義音節（嗯、啊）可省略，但不要省略有意義的內容
+5. 在最後一行加上：SPEAKERS: A,B,C（列出所有出現的說話者代號）`
+        }
+      ]
+    }],
+    generationConfig: { temperature: 0.1 }
+  };
+
+  return await geminiRequest(body);
+}
+
+// Stage 3 — 團錄整理
+async function runStage3() {
+  const characterMapText = Object.entries(state.characterMap)
+    .map(([id, info]) => `Speaker ${id} = ${info}`)
+    .join('\n');
+
+  const userPrompt = `以下是這次 TRPG 團的逐字稿，以及說話者對照表。
+
+【說話者對照表】
+${characterMapText}
+
+【逐字稿】
+${state.rawTranscript}
+
+請根據以上資料，輸出以下四種格式，用 ===FORMAT:xxx=== 分隔：
+
+===FORMAT:MARKDOWN===
+（Markdown 格式的完整團錄，使用 ## 標記章節，**粗體**標記角色名）
+
+===FORMAT:PLAIN===
+（純文字格式，無 Markdown 標記）
+
+===FORMAT:DIALOGUE===
+（對話格式，每行為「角色名：台詞或動作」，適合快速閱讀）
+
+===FORMAT:END===`;
+
+  const body = {
+    contents: [{
+      parts: [{ text: userPrompt }]
+    }],
+    generationConfig: { temperature: 0.7 },
+    systemInstruction: {
+      parts: [{
+        text: `你是一位專業的 TRPG 團錄整理師。你的任務是將玩家錄音的逐字稿整理成文學性強、易於閱讀的團錄。
+
+團錄風格要求：
+- 以小說式的第三人稱敘事描寫場景與動作
+- 角色的對白用粗體「**角色名**」格式標示說話者
+- 保留重要的規則判定結果（如骰子成功/失敗）
+- 剪去明顯的 OOC（Out of Character）閒聊，例如討論吃飯、廁所、閒聊等
+- 如果有明顯的空白停頓或重複，適當精簡
+- 維持事件的時序與因果關係
+- 輸出繁體中文`
+      }]
+    }
+  };
+
+  return await geminiRequest(body);
+}
+
+// ════════════════════════════════════════
+// 7. 回應解析
+// ════════════════════════════════════════
+
+function parseFormatBlocks(text) {
+  const sections = {};
+  const regex = /===FORMAT:(\w+)===([\s\S]*?)(?====FORMAT:|$)/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    sections[match[1]] = match[2].trim();
+  }
+  return sections;
+}
+
+function parseSpeakers(transcript) {
+  // find SPEAKERS: A,B,C line
+  const m = transcript.match(/SPEAKERS:\s*([A-Z,\s]+)/i);
+  if (m) {
+    return m[1].split(',').map(s => s.trim()).filter(Boolean);
+  }
+  // fallback: extract from [Speaker X] tags
+  const speakers = new Set();
+  const re = /\[Speaker ([A-Z])\]/g;
+  let match;
+  while ((match = re.exec(transcript)) !== null) {
+    speakers.add(match[1]);
+  }
+  return [...speakers].sort();
+}
+
+// ════════════════════════════════════════
+// 8. 主流程
+// ════════════════════════════════════════
+
+async function runPipeline() {
+  showView('processing');
+  resetSteps();
+
+  // Step 1: prepare
+  setStepStatus('prepare', 'processing');
+  try {
+    state.audioBase64 = await fileToBase64(state.audioFile);
+    setStepStatus('prepare', 'done', state.audioFile.name);
+  } catch(e) {
+    setStepStatus('prepare', 'error', '音訊讀取失敗：' + e.message);
+    return;
+  }
+
+  // Step 2: gemini1
+  setStepStatus('gemini1', 'processing', '傳送至 Gemini，可能需要數分鐘…');
+  let transcript;
+  try {
+    transcript = await runStage1();
+    state.rawTranscript = transcript;
+    state.detectedSpeakers = parseSpeakers(transcript);
+    setStepStatus('gemini1', 'done', `辨識完成，偵測到 ${state.detectedSpeakers.length} 位說話者`);
+  } catch(e) {
+    setStepStatus('gemini1', 'error', e.message);
+    addStepRetry('gemini1', () => { runPipelineFrom('gemini1'); });
+    return;
+  }
+
+  // Step 3: confirm — pause and let user confirm
+  setStepStatus('confirm', 'processing', '等待使用者確認…');
+  renderConfirmView();
+  showView('confirm');
+}
+
+// 可從中途步驟重跑
+async function runPipelineFrom(fromStep) {
+  showView('processing');
+
+  if (fromStep === 'gemini1') {
+    setStepStatus('gemini1', 'processing', '傳送至 Gemini，可能需要數分鐘…');
+    try {
+      const transcript = await runStage1();
+      state.rawTranscript = transcript;
+      state.detectedSpeakers = parseSpeakers(transcript);
+      setStepStatus('gemini1', 'done', `辨識完成，偵測到 ${state.detectedSpeakers.length} 位說話者`);
+      setStepStatus('confirm', 'processing', '等待使用者確認…');
+      renderConfirmView();
+      showView('confirm');
+    } catch(e) {
+      setStepStatus('gemini1', 'error', e.message);
+      addStepRetry('gemini1', () => { runPipelineFrom('gemini1'); });
+    }
+    return;
+  }
+
+  if (fromStep === 'gemini2') {
+    await runStage3Pipeline();
+  }
+}
+
+async function runStage3Pipeline() {
+  showView('processing');
+  setStepStatus('gemini2', 'processing', '傳送至 Gemini，整理中…');
+
+  let responseText;
+  try {
+    responseText = await runStage3();
+  } catch(e) {
+    setStepStatus('gemini2', 'error', e.message);
+    addStepRetry('gemini2', () => { runStage3Pipeline(); });
+    return;
+  }
+
+  const sections = parseFormatBlocks(responseText);
+
+  if (!sections.MARKDOWN) {
+    // fallback
+    sections.MARKDOWN = responseText;
+    sections.PLAIN = responseText;
+    sections.DIALOGUE = '（格式解析失敗，請使用 Markdown 版本）';
+  }
+
+  state.outputs.markdown  = sections.MARKDOWN  || '';
+  state.outputs.plain     = sections.PLAIN     || '';
+  state.outputs.dialogue  = sections.DIALOGUE  || '';
+
+  setStepStatus('gemini2', 'done', '整理完成');
+
+  // Step 5: generate
+  setStepStatus('generate', 'processing');
+  // (files are generated on-demand when user clicks download)
+  setStepStatus('generate', 'done', '可以下載了');
+
+  renderResultView();
+  showView('result');
+}
+
+function addStepRetry(stepId, callback) {
+  const li = document.querySelector(`[data-step="${stepId}"]`);
+  if (!li) return;
+  const existing = li.querySelector('.step-retry');
+  if (existing) existing.remove();
+  const btn = document.createElement('button');
+  btn.className = 'step-retry';
+  btn.textContent = '重試';
+  btn.addEventListener('click', () => { btn.remove(); callback(); });
+  li.querySelector('div').appendChild(btn);
+}
+
+// ════════════════════════════════════════
+// 9. Confirm 頁面渲染
+// ════════════════════════════════════════
+
+function renderConfirmView() {
+  const container = document.getElementById('confirm-char-rows');
+  container.innerHTML = '';
+
+  // build initial characterMap from defaults
+  const defaults = {};
+  state.config.defaultCharacters.forEach(ch => {
+    if (ch.speakerId) defaults[ch.speakerId] = { characterName: ch.characterName, playerName: ch.playerName };
+  });
+
+  state.detectedSpeakers.forEach(id => {
+    const def = defaults[id] || {};
+    const row = document.createElement('div');
+    row.className = 'char-row';
+    row.dataset.speaker = id;
+    row.innerHTML = `
+      <input type="text" value="Speaker ${id}" readonly style="color:var(--color-muted)">
+      <input type="text" class="conf-name"   value="${def.characterName || ''}" placeholder="角色名稱">
+      <input type="text" class="conf-player" value="${def.playerName || ''}" placeholder="玩家名稱（選填）">
+      <span></span>
+    `;
+    container.appendChild(row);
+  });
+
+  // transcript preview (show first 60 lines)
+  const lines = state.rawTranscript.split('\n').filter(l => l.trim() && !l.startsWith('SPEAKERS:'));
+  document.getElementById('transcript-preview').textContent = lines.slice(0, 60).join('\n') + (lines.length > 60 ? '\n…（更多內容）' : '');
+}
+
+function collectConfirmMap() {
+  const rows = document.querySelectorAll('#confirm-char-rows .char-row');
+  state.characterMap = {};
+  rows.forEach(row => {
+    const id = row.dataset.speaker;
+    const name   = row.querySelector('.conf-name').value.trim();
+    const player = row.querySelector('.conf-player').value.trim();
+    let label = name || `Speaker ${id}`;
+    if (player) label += `（玩家：${player}）`;
+    state.characterMap[id] = label;
+  });
+}
+
+// ════════════════════════════════════════
+// 10. Result 頁面渲染
+// ════════════════════════════════════════
+
+function renderResultView() {
+  document.getElementById('result-markdown').textContent = state.outputs.markdown;
+  document.getElementById('result-plain').textContent    = state.outputs.plain;
+  document.getElementById('result-dialogue').textContent = state.outputs.dialogue;
+}
+
+// ════════════════════════════════════════
+// 11. 檔案下載
+// ════════════════════════════════════════
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadMarkdown() {
+  triggerDownload(new Blob([state.outputs.markdown], { type: 'text/markdown;charset=utf-8' }), 'session_log.md');
+}
+
+function downloadPlain() {
+  triggerDownload(new Blob([state.outputs.plain], { type: 'text/plain;charset=utf-8' }), 'session_log.txt');
+}
+
+function downloadDialogue() {
+  triggerDownload(new Blob([state.outputs.dialogue], { type: 'text/plain;charset=utf-8' }), 'session_log_dialogue.txt');
+}
+
+function markdownToDocxParagraphs(markdown) {
+  const { Document, Paragraph, TextRun, HeadingLevel, Packer } = docx;
+  const lines = markdown.split('\n');
+  const children = [];
+
+  lines.forEach(line => {
+    if (line.startsWith('## ')) {
+      children.push(new Paragraph({
+        heading: HeadingLevel.HEADING_2,
+        children: [new TextRun(line.replace('## ', ''))]
+      }));
+    } else if (line.startsWith('# ')) {
+      children.push(new Paragraph({
+        heading: HeadingLevel.HEADING_1,
+        children: [new TextRun(line.replace('# ', ''))]
+      }));
+    } else if (line.trim() === '') {
+      children.push(new Paragraph({ text: '' }));
+    } else {
+      const parts = line.split(/(\*\*[^*]+\*\*)/);
+      const runs = parts.map(part => {
+        if (part.startsWith('**') && part.endsWith('**')) {
+          return new TextRun({ text: part.slice(2, -2), bold: true });
+        }
+        return new TextRun(part);
+      });
+      children.push(new Paragraph({ children: runs }));
+    }
+  });
+
+  return children;
+}
+
+function downloadDocx() {
+  const { Document, Packer } = docx;
+  const doc = new Document({
+    sections: [{
+      properties: {
+        page: {
+          size: { width: 11906, height: 16838 },
+          margin: { top: 1134, right: 1134, bottom: 1134, left: 1134 }
+        }
+      },
+      children: markdownToDocxParagraphs(state.outputs.markdown)
+    }]
+  });
+
+  Packer.toBlob(doc).then(blob => {
+    triggerDownload(blob, 'session_log.docx');
+  });
+}
+
+// ════════════════════════════════════════
+// 12. 事件監聽器
+// ════════════════════════════════════════
+
+// Header 設定按鈕
+document.getElementById('btn-settings').addEventListener('click', () => {
+  initSetupView();
+  showView('setup');
+});
+
+// ── Setup view ──
+document.getElementById('btn-toggle-key').addEventListener('click', function() {
+  const input = document.getElementById('input-key');
+  if (input.type === 'password') { input.type = 'text'; this.textContent = '隱藏'; }
+  else { input.type = 'password'; this.textContent = '顯示'; }
+});
+
+document.getElementById('btn-add-char').addEventListener('click', () => {
+  collectCharRows();
+  // auto-suggest next speaker letter
+  const existing = state.config.defaultCharacters.map(c => c.speakerId.toUpperCase());
+  let next = 'A';
+  for (let c = 65; c <= 90; c++) {
+    const letter = String.fromCharCode(c);
+    if (!existing.includes(letter)) { next = letter; break; }
+  }
+  state.config.defaultCharacters.push({ speakerId: next, characterName: '', playerName: '' });
+  renderCharRows();
+});
+
+document.getElementById('btn-save-config').addEventListener('click', () => {
+  collectCharRows();
+  state.config.geminiKey = document.getElementById('input-key').value.trim();
+  localStorage.setItem('trpg_config', JSON.stringify(state.config));
+  const btn = document.getElementById('btn-save-config');
+  btn.textContent = '✓ 已儲存';
+  setTimeout(() => { btn.textContent = '儲存設定'; }, 1500);
+});
+
+document.getElementById('btn-start').addEventListener('click', () => {
+  collectCharRows();
+  state.config.geminiKey = document.getElementById('input-key').value.trim();
+  if (!state.config.geminiKey) {
+    document.getElementById('alert-key').className = 'alert error show';
+    return;
+  }
+  document.getElementById('alert-key').className = 'alert error';
+  localStorage.setItem('trpg_config', JSON.stringify(state.config));
+  showView('upload');
+});
+
+// ── Upload view ──
+const uploadZone = document.getElementById('upload-zone');
+const fileInput  = document.getElementById('file-input');
+
+uploadZone.addEventListener('click', () => fileInput.click());
+
+uploadZone.addEventListener('dragover', e => {
+  e.preventDefault();
+  uploadZone.classList.add('dragover');
+});
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadZone.classList.remove('dragover');
+  handleFileSelect(e.dataTransfer.files[0]);
+});
+
+fileInput.addEventListener('change', () => handleFileSelect(fileInput.files[0]));
+
+document.getElementById('btn-upload-back').addEventListener('click', () => {
+  initSetupView();
+  showView('setup');
+});
+
+document.getElementById('btn-process').addEventListener('click', () => {
+  if (!state.audioFile) return;
+  runPipeline();
+});
+
+// ── Confirm view ──
+document.getElementById('btn-confirm').addEventListener('click', () => {
+  collectConfirmMap();
+  setStepStatus('confirm', 'done', '使用者已確認');
+  runStage3Pipeline();
+});
+
+// ── Result view — tabs ──
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', function() {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    this.classList.add('active');
+    document.getElementById('tab-' + this.dataset.tab).classList.add('active');
+  });
+});
+
+// ── Result view — downloads ──
+document.getElementById('dl-md').addEventListener('click', downloadMarkdown);
+document.getElementById('dl-txt').addEventListener('click', downloadPlain);
+document.getElementById('dl-docx').addEventListener('click', downloadDocx);
+document.getElementById('dl-dialogue').addEventListener('click', downloadDialogue);
+
+document.getElementById('btn-reprocess').addEventListener('click', () => {
+  state.audioFile = null;
+  state.audioBase64 = '';
+  document.getElementById('file-info').style.display = 'none';
+  document.getElementById('btn-process').disabled = true;
+  document.getElementById('file-input').value = '';
+  showView('upload');
+});
+
+document.getElementById('btn-regen').addEventListener('click', () => {
+  if (!state.rawTranscript) {
+    showView('upload');
+    return;
+  }
+  resetSteps();
+  setStepStatus('prepare', 'done', state.audioFile ? state.audioFile.name : '（已有逐字稿）');
+  setStepStatus('gemini1', 'done', '使用既有逐字稿');
+  setStepStatus('confirm', 'done', '使用既有對照表');
+  runStage3Pipeline();
+});
+
+// ════════════════════════════════════════
+// 13. 初始化
+// ════════════════════════════════════════
+
+(function init() {
+  if (state.config.geminiKey) {
+    // Key 已存 → 直接進上傳頁
+    showView('upload');
+  } else {
+    initSetupView();
+    showView('setup');
+  }
+})();
+</script>
+</body>
+</html>
