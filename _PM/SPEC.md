@@ -71,7 +71,7 @@
 
 | 狀態 | 畫面 |
 |------|------|
-| `setup` | 初始設定：填入 Gemini API Key、設定預設角色表 |
+| `setup` | 初始設定：填入 Gemini API Key |
 | `upload` | 上傳頁：拖拉或點擊上傳錄音檔 |
 | `processing` | 處理中：顯示各階段進度 |
 | `confirm` | 角色確認：讓使用者確認/修改說話者對應 |
@@ -92,12 +92,10 @@
 
 **setup 狀態**
 - Gemini API Key 輸入欄（type=password，有顯示/隱藏切換）
-- 預設角色對照表編輯區：
-  - 列表形式，每列 = 一個角色
-  - 欄位：說話者代號（Speaker A）/ 角色名稱 / 備註（可選）
-  - 可新增、刪除列
 - 「儲存設定」按鈕（寫入 localStorage）
 - 「開始使用」按鈕（跳至 upload 狀態）
+
+> **決策紀錄**：移除預設角色對照表。原因：Gemini 的 Speaker A/B/C 依每次錄音說話順序隨機分配，預設表無法可靠預填；改為在 confirm 頁讓使用者直接對照逐字稿內容填入角色名稱。
 
 **upload 狀態**
 - 大型拖拉區域（Drag & Drop），同時支援點擊選擇
@@ -128,9 +126,8 @@
 
 - 標題：「請確認說話者對應」
 - 顯示 Gemini 辨識出的說話者清單（例：Speaker A、Speaker B、Speaker C）
-- 每個說話者旁邊有文字輸入欄，預填來自 localStorage 的預設值
-- 若辨識到比預設更多的說話者，自動新增空白列
-- 逐字稿預覽區（可捲動，讓使用者確認辨識品質）
+- 每個說話者旁邊有文字輸入欄（空白，讓使用者對照逐字稿自行填入）
+- 逐字稿預覽區（可捲動，讓使用者確認辨識品質並判斷說話者身份）
 - 「確認並產生團錄」按鈕 → 進入 Stage 3
 
 **result 狀態**
@@ -377,9 +374,6 @@ function triggerDownload(blob, filename) {
 const state = {
   config: {
     geminiKey: '',
-    defaultCharacters: [
-      // { speakerId: 'A', characterName: '', playerName: '' }
-    ]
   },
 
   currentState: 'setup', // 'setup' | 'upload' | 'processing' | 'confirm' | 'result'
