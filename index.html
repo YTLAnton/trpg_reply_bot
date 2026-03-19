@@ -6,7 +6,6 @@
   <title>TRPG 團錄轉寫器</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@400;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-  <script src="https://unpkg.com/docx@8.5.0/build/index.js"></script>
   <style>
     :root {
       --color-bg:      #1A1A2E;
@@ -316,14 +315,6 @@
       border-color: var(--color-accent);
     }
 
-    .download-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-      margin-top: 20px;
-    }
-    .download-grid .btn { width: 100%; text-align: left; }
-
     /* ── Alert / error ── */
     .alert {
       border-radius: var(--radius);
@@ -484,13 +475,6 @@
             <div class="step-detail"></div>
           </div>
         </li>
-        <li class="step pending" data-step="generate">
-          <div class="step-icon">○</div>
-          <div>
-            <div class="step-label">生成下載檔案</div>
-            <div class="step-detail"></div>
-          </div>
-        </li>
       </ul>
     </div>
   </section>
@@ -513,7 +497,7 @@
   <!-- ══════════════ RESULT ══════════════ -->
   <section id="view-result">
     <div class="section-title">團錄完成</div>
-    <div class="section-sub">下方為生成的純文字小說，可直接在框內編輯或使用搜尋取代功能。確認沒問題再下載。</div>
+    <div class="section-sub">在框內直接編輯，或用下方搜尋取代工具批次修正名稱。完成後全選（Ctrl+A）複製即可。</div>
 
     <div class="editor-toolbar">
       <input type="text" id="find-text" placeholder="🔍 尋找...">
@@ -522,13 +506,8 @@
       <button class="btn btn-secondary btn-sm" id="btn-replace">取代</button>
       <button class="btn btn-primary btn-sm" id="btn-replace-all">全部取代</button>
     </div>
-    
-    <textarea id="result-editor" class="editor-textarea"></textarea>
 
-    <div class="download-grid">
-      <button class="btn btn-secondary" id="dl-txt">📥 下載純文字 (.txt)</button>
-      <button class="btn btn-secondary" id="dl-docx">📥 下載 Word (.docx)</button>
-    </div>
+    <textarea id="result-editor" class="editor-textarea"></textarea>
 
     <div class="btn-row" style="margin-top:24px">
       <button class="btn btn-ghost" id="btn-reprocess">🔄 重新上傳（新錄音）</button>
@@ -560,9 +539,7 @@ const state = {
   characterMap: {},
 
   outputs: {
-    markdown: '',
-    plain: '',
-    dialogue: '',
+    text: '',
   },
 
   progress: {
@@ -571,7 +548,6 @@ const state = {
       { id: 'gemini1',  label: 'Gemini 語音辨識', status: 'pending' },
       { id: 'confirm',  label: '逐字稿預覽',       status: 'pending' },
       { id: 'gemini2',  label: 'Gemini 團錄整理', status: 'pending' },
-      { id: 'generate', label: '生成下載檔案',     status: 'pending' },
     ]
   }
 };
@@ -1018,28 +994,16 @@ async function runStage3Pipeline() {
     return;
   }
 
-  let mdText = responseText.trim();
-  if (mdText.startsWith('\`\`\`markdown')) {
-    mdText = mdText.replace(/^\`\`\`markdown\\n/, '').replace(/\\n\`\`\`$/, '');
-  }
+  // 去除可能殘留的 Markdown 符號
+  let plainText = responseText.trim()
+    .replace(/^```[\w]*\n?/gm, '').replace(/```$/gm, '')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '');
 
-  // 透過正則表達式簡單將 Markdown 去除成純文字格式
-  let plainText = mdText
-    .replace(/\\*\\*(.*?)\\*\\*/g, '$1')
-    .replace(/\\*(.*?)\\*/g, '$1')
-    .replace(/## /g, '')
-    .replace(/# /g, '');
-
-  state.outputs.markdown  = mdText;
-  state.outputs.plain     = plainText;
-  state.outputs.dialogue  = '提示：為確保團錄產出不受字數截斷，目前統一以 Markdown 格式高畫質輸出。\\n若需純對白提取，請直接以純文字修改。';
+  state.outputs.text = plainText;
 
   setStepStatus('gemini2', 'done', '整理完成');
-
-  // Step 5: generate
-  setStepStatus('generate', 'processing');
-  // (files are generated on-demand when user clicks download)
-  setStepStatus('generate', 'done', '可以下載了');
 
   renderResultView();
   showView('result');
@@ -1083,7 +1047,7 @@ function collectConfirmMap() {
 // ════════════════════════════════════════
 
 function renderResultView() {
-  document.getElementById('result-editor').value = state.outputs.text;
+  document.getElementById('result-editor').value = state.outputs.text || '';
 }
 
 // ── Search Replace Logic ──
@@ -1149,56 +1113,7 @@ document.getElementById('btn-replace-all').addEventListener('click', () => {
 });
 
 // ════════════════════════════════════════
-// 11. 檔案下載
-// ════════════════════════════════════════
-
-function triggerDownload(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function downloadPlain() {
-  const text = document.getElementById('result-editor').value;
-  triggerDownload(new Blob([text], { type: 'text/plain;charset=utf-8' }), 'session_log.txt');
-}
-
-function textToDocxParagraphs(text) {
-  const { Paragraph, TextRun } = docx;
-  const lines = text.split('\n');
-  return lines.map(line => {
-    if (line.trim() === '') {
-      return new Paragraph({ text: '' });
-    }
-    return new Paragraph({ children: [new TextRun(line)] });
-  });
-}
-
-function downloadDocx() {
-  const { Document, Packer } = docx;
-  const text = document.getElementById('result-editor').value;
-  const doc = new Document({
-    sections: [{
-      properties: {
-        page: {
-          size: { width: 11906, height: 16838 },
-          margin: { top: 1134, right: 1134, bottom: 1134, left: 1134 }
-        }
-      },
-      children: textToDocxParagraphs(text)
-    }]
-  });
-
-  Packer.toBlob(doc).then(blob => {
-    triggerDownload(blob, 'session_log.docx');
-  });
-}
-
-// ════════════════════════════════════════
-// 12. 事件監聽器
+// 11. 事件監聽器
 // ════════════════════════════════════════
 
 // Header 設定按鈕
@@ -1340,10 +1255,6 @@ document.getElementById('btn-confirm').addEventListener('click', () => {
   setStepStatus('confirm', 'done', '使用者已確認');
   runStage3Pipeline();
 });
-
-// ── Result view — downloads ──
-document.getElementById('dl-txt').addEventListener('click', downloadPlain);
-document.getElementById('dl-docx').addEventListener('click', downloadDocx);
 
 document.getElementById('btn-reprocess').addEventListener('click', () => {
   state.audioFile = null;
