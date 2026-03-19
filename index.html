@@ -96,6 +96,7 @@
       margin-bottom: 6px;
     }
 
+    select,
     input[type="text"],
     input[type="password"] {
       width: 100%;
@@ -109,6 +110,7 @@
       outline: none;
       transition: border-color 0.2s;
     }
+    select:focus,
     input[type="text"]:focus,
     input[type="password"]:focus { border-color: var(--color-accent); }
 
@@ -181,25 +183,7 @@
     }
     .key-field input { flex: 1; }
 
-    /* ── Character table ── */
-    .char-table-header {
-      display: grid;
-      grid-template-columns: 130px 1fr 1fr 44px;
-      gap: 8px;
-      font-size: 0.8rem;
-      color: var(--color-muted);
-      padding: 0 0 8px 0;
-      border-bottom: 1px solid var(--color-primary);
-      margin-bottom: 8px;
-    }
-
-    .char-row {
-      display: grid;
-      grid-template-columns: 130px 1fr 1fr 44px;
-      gap: 8px;
-      margin-bottom: 8px;
-      align-items: center;
-    }
+    /* ── Character table (Removed) ── */
 
     /* ── Upload zone ── */
     .upload-zone {
@@ -291,45 +275,45 @@
     }
 
     /* ── Result view ── */
-    .tabs {
+    /* ── Editor Toolbar ── */
+    .editor-toolbar {
       display: flex;
-      gap: 4px;
-      margin-bottom: 16px;
+      gap: 8px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+      background: var(--color-surface);
+      padding: 12px;
+      border: 1px solid var(--color-primary);
+      border-radius: var(--radius);
+      align-items: center;
     }
-    .tab {
-      padding: 8px 16px;
-      border-radius: var(--radius) var(--radius) 0 0;
-      cursor: pointer;
+    .editor-toolbar input {
+      flex: 1;
+      min-width: 120px;
+      padding: 8px 12px;
+      font-size: 0.9rem;
       background: var(--color-bg);
       border: 1px solid var(--color-primary);
-      border-bottom: none;
-      font-size: 0.9rem;
-      color: var(--color-muted);
-      transition: background 0.2s;
+      color: var(--color-text);
+      border-radius: var(--radius);
     }
-    .tab.active {
-      background: var(--color-surface);
-      color: var(--color-accent);
-      border-bottom: 1px solid var(--color-surface);
-    }
-
-    .tab-content {
-      background: var(--color-surface);
+    
+    .editor-textarea {
+      width: 100%;
+      height: 500px;
+      background: var(--color-bg);
       border: 1px solid var(--color-primary);
-      border-radius: 0 var(--radius) var(--radius) var(--radius);
+      border-radius: var(--radius);
       padding: 16px;
-      max-height: 420px;
-      overflow-y: auto;
-    }
-
-    .tab-panel { display: none; }
-    .tab-panel.active { display: block; }
-
-    .result-text {
+      font-size: 0.95rem;
+      line-height: 1.8;
+      color: var(--color-text);
       font-family: 'Noto Serif TC', Georgia, serif;
-      font-size: 0.9rem;
-      line-height: 1.9;
-      white-space: pre-wrap;
+      resize: vertical;
+      outline: none;
+    }
+    .editor-textarea:focus {
+      border-color: var(--color-accent);
     }
 
     .download-grid {
@@ -349,7 +333,8 @@
       display: none;
     }
     .alert.error { background: rgba(244, 67, 54, 0.15); border: 1px solid var(--color-error); color: #ff8a80; }
-    .alert.warn  { background: rgba(255, 193, 7, 0.1); border: 1px solid #FFC107; color: #FFD54F; }
+    .alert.warn    { background: rgba(255, 193, 7, 0.1); border: 1px solid #FFC107; color: #FFD54F; }
+    .alert.success { background: rgba(76, 175, 80, 0.15); border: 1px solid var(--color-success); color: #a5d6a7; }
     .alert.info  { background: rgba(74, 63, 107, 0.3); border: 1px solid var(--color-primary); color: var(--color-muted); }
     .alert.show  { display: block; }
 
@@ -415,16 +400,29 @@
       <div class="alert error" id="alert-key">請填入 API Key 才能繼續。</div>
     </div>
 
+    <div class="card">
+      <div class="card-title">⚙ Gemini 模型</div>
+      <label for="input-model-select">請選擇或自訂 Model ID，推薦使用 <strong>gemini-2.5-flash</strong></label>
+      <select id="input-model-select" style="margin-bottom: 8px;">
+        <option value="gemini-2.5-flash">gemini-2.5-flash (推薦：速度與成本最佳平衡)</option>
+        <option value="gemini-2.5-pro">gemini-2.5-pro (推薦：文學性與邏輯推演最強)</option>
+        <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (極輕量版)</option>
+        <option value="custom">自訂模型 (Custom Model)</option>
+      </select>
+      <input type="text" id="input-model" placeholder="若選自訂，請在此填寫模型 ID (例如：gemini-exp-1206)" style="display: none;">
+    </div>
+
     <div class="btn-row">
       <button class="btn btn-secondary" id="btn-save-config">儲存設定</button>
+      <button class="btn btn-ghost" id="btn-test-api">測試 API Key</button>
       <button class="btn btn-primary" id="btn-start">開始使用 →</button>
     </div>
+    <div class="alert" id="alert-test"></div>
   </section>
 
   <!-- ══════════════ UPLOAD ══════════════ -->
   <section id="view-upload">
     <div class="section-title">上傳錄音</div>
-    <div class="section-sub">支援 mp3、m4a、wav、ogg、flac、aac 格式。大型檔案會自動分段處理，無大小限制。</div>
 
     <div class="card">
       <div class="upload-zone" id="upload-zone">
@@ -475,7 +473,7 @@
         <li class="step pending" data-step="confirm">
           <div class="step-icon">○</div>
           <div>
-            <div class="step-label">辨識結果確認</div>
+            <div class="step-label">逐字稿預覽</div>
             <div class="step-detail"></div>
           </div>
         </li>
@@ -499,19 +497,8 @@
 
   <!-- ══════════════ CONFIRM ══════════════ -->
   <section id="view-confirm">
-    <div class="section-title">確認說話者對應</div>
-    <div class="section-sub">Gemini 辨識出以下說話者，請確認或修改對應的角色名稱。</div>
-
-    <div class="card">
-      <div class="card-title">👥 說話者對應</div>
-      <div class="char-table-header">
-        <span>說話者代號</span>
-        <span>角色名稱</span>
-        <span>玩家名稱（選填）</span>
-        <span></span>
-      </div>
-      <div id="confirm-char-rows"></div>
-    </div>
+    <div class="section-title">逐字稿預覽</div>
+    <div class="section-sub">此為部分逐字稿預覽，確認無誤後即可交給 Gemini 進行最終的團錄（小說）整理。</div>
 
     <div class="card">
       <div class="card-title">📄 逐字稿預覽</div>
@@ -526,30 +513,21 @@
   <!-- ══════════════ RESULT ══════════════ -->
   <section id="view-result">
     <div class="section-title">團錄完成</div>
-    <div class="section-sub">下方為生成的團錄，可預覽各格式並下載。</div>
+    <div class="section-sub">下方為生成的純文字小說，可直接在框內編輯或使用搜尋取代功能。確認沒問題再下載。</div>
 
-    <div class="tabs">
-      <div class="tab active" data-tab="markdown">Markdown</div>
-      <div class="tab" data-tab="plain">純文字</div>
-      <div class="tab" data-tab="dialogue">對話格式</div>
+    <div class="editor-toolbar">
+      <input type="text" id="find-text" placeholder="🔍 尋找...">
+      <input type="text" id="replace-text" placeholder="✏️ 取代為...">
+      <button class="btn btn-secondary btn-sm" id="btn-find-next">找下一個</button>
+      <button class="btn btn-secondary btn-sm" id="btn-replace">取代</button>
+      <button class="btn btn-primary btn-sm" id="btn-replace-all">全部取代</button>
     </div>
-    <div class="tab-content">
-      <div class="tab-panel active" id="tab-markdown">
-        <pre class="result-text" id="result-markdown"></pre>
-      </div>
-      <div class="tab-panel" id="tab-plain">
-        <pre class="result-text" id="result-plain"></pre>
-      </div>
-      <div class="tab-panel" id="tab-dialogue">
-        <pre class="result-text" id="result-dialogue"></pre>
-      </div>
-    </div>
+    
+    <textarea id="result-editor" class="editor-textarea"></textarea>
 
     <div class="download-grid">
-      <button class="btn btn-secondary" id="dl-md">📥 下載 Markdown (.md)</button>
       <button class="btn btn-secondary" id="dl-txt">📥 下載純文字 (.txt)</button>
       <button class="btn btn-secondary" id="dl-docx">📥 下載 Word (.docx)</button>
-      <button class="btn btn-secondary" id="dl-dialogue">📥 下載對話格式 (.txt)</button>
     </div>
 
     <div class="btn-row" style="margin-top:24px">
@@ -568,6 +546,7 @@
 const state = {
   config: {
     geminiKey: '',
+    geminiModel: 'gemini-2.5-flash',
   },
 
   currentState: 'setup',
@@ -590,7 +569,7 @@ const state = {
     steps: [
       { id: 'prepare',  label: '準備音訊檔案',    status: 'pending' },
       { id: 'gemini1',  label: 'Gemini 語音辨識', status: 'pending' },
-      { id: 'confirm',  label: '辨識結果確認',     status: 'pending' },
+      { id: 'confirm',  label: '逐字稿預覽',       status: 'pending' },
       { id: 'gemini2',  label: 'Gemini 團錄整理', status: 'pending' },
       { id: 'generate', label: '生成下載檔案',     status: 'pending' },
     ]
@@ -623,6 +602,19 @@ function showView(name) {
 
 function initSetupView() {
   document.getElementById('input-key').value = state.config.geminiKey || '';
+  const currentModel = state.config.geminiModel || 'gemini-2.5-flash';
+  const selectEl = document.getElementById('input-model-select');
+  const inputEl = document.getElementById('input-model');
+  
+  if (Array.from(selectEl.options).some(opt => opt.value === currentModel)) {
+    selectEl.value = currentModel;
+    inputEl.style.display = 'none';
+    inputEl.value = currentModel;
+  } else {
+    selectEl.value = 'custom';
+    inputEl.style.display = 'block';
+    inputEl.value = currentModel;
+  }
 }
 
 // ════════════════════════════════════════
@@ -713,9 +705,10 @@ function resetSteps() {
 // 6. Gemini API 呼叫
 // ════════════════════════════════════════
 
-const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent';
+function getGeminiEndpoint() {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${state.config.geminiModel}:generateContent`;
+}
 const SMALL_FILE_THRESHOLD = 20 * 1024 * 1024;  // ≤20MB 直接 base64
-const BYTE_SLICE_SIZE      = 12 * 1024 * 1024;  // 每次從磁碟讀 12MB 解碼（記憶體峰值 ~350MB）
 const CHUNK_DURATION_SEC   = 7 * 60;            // 重採樣後每段送 Gemini 最多 7 分鐘
 const CHUNK_SAMPLE_RATE    = 16000;             // 16kHz mono 語音足夠
 
@@ -758,79 +751,103 @@ function mergeTranscripts(transcripts) {
 // ── 大型檔案：逐 12MB 切片解碼 → 重採樣 → 7 分鐘 WAV → Gemini ──
 // 記憶體永遠只持有「目前 slice 的解碼結果」，峰值 ~350MB，與檔案大小無關。
 async function runStage1Chunked(file) {
-  const totalSlices = Math.ceil(file.size / BYTE_SLICE_SIZE);
-  const allTranscripts = [];
-  let chunkNum = 0;
+  // 1. 讀取並解碼整個檔案
+  // 注意：壓縮格式（M4A/AAC/MP4 等）的 codec header 在固定位置，
+  // 不能切成 byte slice 各自解碼，必須整檔 decode 再切 PCM。
+  setStepStatus('gemini1', 'processing', `讀取音訊（${formatBytes(file.size)}）…`);
+  const arrayBuf = await file.arrayBuffer();
 
-  for (let si = 0; si < totalSlices; si++) {
-    const byteStart = si * BYTE_SLICE_SIZE;
-    const byteEnd   = Math.min(byteStart + BYTE_SLICE_SIZE, file.size);
-
-    // 1. 讀取這塊 bytes
-    setStepStatus('gemini1', 'processing',
-      `解碼音訊片段 ${si + 1}/${totalSlices}（${formatBytes(byteEnd)} / ${formatBytes(file.size)}）…`);
-    const arrayBuf = await file.slice(byteStart, byteEnd).arrayBuffer();
-
-    // 2. 解碼（MP3/WAV/AAC 等，現代瀏覽器可從中段 frame 同步）
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    let decoded;
-    try {
-      decoded = await audioCtx.decodeAudioData(arrayBuf);
-    } catch(e) {
-      audioCtx.close();
-      if (si === 0) throw new Error('音訊解碼失敗，請確認格式為 mp3、m4a、wav、ogg、flac 或 aac。');
-      continue; // 末尾破損的 partial frame，跳過
-    }
+  setStepStatus('gemini1', 'processing', '解碼音訊…');
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  let decoded;
+  try {
+    decoded = await audioCtx.decodeAudioData(arrayBuf);
+  } catch(e) {
     audioCtx.close();
+    console.error('[音訊解碼失敗]', e);
+    throw new Error('音訊解碼失敗，請確認格式為 mp3、m4a、wav、ogg、flac 或 aac。');
+  }
+  audioCtx.close();
 
-    // 3. 重採樣為 16kHz mono
-    const totalFrames = Math.ceil(decoded.duration * CHUNK_SAMPLE_RATE);
-    const offCtx = new OfflineAudioContext(1, totalFrames, CHUNK_SAMPLE_RATE);
-    const src = offCtx.createBufferSource();
-    src.buffer = decoded;
-    src.connect(offCtx.destination);
-    src.start(0);
-    const rendered = await offCtx.startRendering();
-    const pcm = rendered.getChannelData(0);
+  // 2. 重採樣為 16kHz mono
+  const totalFrames = Math.ceil(decoded.duration * CHUNK_SAMPLE_RATE);
+  setStepStatus('gemini1', 'processing',
+    `重採樣音訊（${Math.round(decoded.duration / 60)} 分鐘）…`);
+  const offCtx = new OfflineAudioContext(1, totalFrames, CHUNK_SAMPLE_RATE);
+  const src = offCtx.createBufferSource();
+  src.buffer = decoded;
+  src.connect(offCtx.destination);
+  src.start(0);
+  const rendered = await offCtx.startRendering();
+  const pcm = rendered.getChannelData(0);
 
-    // 4. 切成 7 分鐘 WAV 逐段辨識
-    const chunkSamples = CHUNK_SAMPLE_RATE * CHUNK_DURATION_SEC;
-    const numSub = Math.ceil(pcm.length / chunkSamples);
-    for (let ci = 0; ci < numSub; ci++) {
-      chunkNum++;
-      const wavBlob = pcmToWav(pcm.slice(ci * chunkSamples, (ci + 1) * chunkSamples), CHUNK_SAMPLE_RATE);
-      const base64  = await fileToBase64(wavBlob);
-      setStepStatus('gemini1', 'processing',
-        `辨識第 ${chunkNum} 段（${formatBytes(byteEnd)} / ${formatBytes(file.size)} 已處理）…`);
-      allTranscripts.push(await runStage1(base64, 'audio/wav'));
-    }
+  // 3. 切成 7 分鐘 WAV 逐段辨識
+  const chunkSamples = CHUNK_SAMPLE_RATE * CHUNK_DURATION_SEC;
+  const numChunks = Math.ceil(pcm.length / chunkSamples);
+  const allTranscripts = [];
+
+  for (let ci = 0; ci < numChunks; ci++) {
+    const wavBlob = pcmToWav(pcm.slice(ci * chunkSamples, (ci + 1) * chunkSamples), CHUNK_SAMPLE_RATE);
+    const base64  = await fileToBase64(wavBlob);
+    setStepStatus('gemini1', 'processing', `辨識第 ${ci + 1}/${numChunks} 段…`);
+    allTranscripts.push(await runStage1(base64, 'audio/wav'));
   }
 
   return mergeTranscripts(allTranscripts);
 }
 
 async function geminiRequest(body) {
-  const res = await fetch(GEMINI_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': state.config.geminiKey,
-    },
-    body: JSON.stringify(body),
-  });
+  const errMap = {
+    400: '音訊格式不支援或請求格式錯誤。',
+    403: 'API Key 無效或權限不足，請至設定頁重新填入。',
+    404: 'Gemini 模型不存在或已停用，請確認 API 端點是否正確。',
+  };
 
-  if (!res.ok) {
-    const errMap = {
-      429: 'API 請求頻率超限，請稍後重試。',
-      400: '音訊格式不支援或請求格式錯誤。',
-      403: 'API Key 無效或權限不足，請至設定頁重新填入。',
-    };
-    const msg = errMap[res.status] || `API 錯誤 (HTTP ${res.status})`;
-    throw new Error(msg);
+  // 關閉所有安全過濾，避免 TRPG 的戰鬥等描述被鎖定
+  body.safetySettings = [
+    { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+    { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+    { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+    { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+  ];
+
+  let delay = 15000; // 初始等待 15 秒
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    const res = await fetch(getGeminiEndpoint(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': state.config.geminiKey,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (res.status === 429) {
+      const errBody = await res.json().catch(() => ({}));
+      console.warn(`[Gemini] 429 回應內容：` + JSON.stringify(errBody));
+      if (attempt === 5) throw new Error(`API 請求頻率超限，已重試 ${attempt} 次，請稍後再試。`);
+      console.warn(`[Gemini] 429 限速，第 ${attempt} 次重試，等待 ${delay / 1000} 秒…`);
+      await new Promise(r => setTimeout(r, delay));
+      delay *= 2; // exponential backoff
+      continue;
+    }
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      console.error(`[Gemini] HTTP ${res.status} 錯誤內容：`, errBody);
+      const msg = errMap[res.status] || `API 錯誤 (HTTP ${res.status})`;
+      throw new Error(msg);
+    }
+
+    const data = await res.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) {
+      const reason = data.candidates?.[0]?.finishReason || data.promptFeedback?.blockReason || '無回應';
+      console.warn(`[Gemini] 此段無法辨識，跳過。原因：${reason}`, data);
+      return '';
+    }
+    return text;
   }
-
-  const data = await res.json();
-  return data.candidates[0].content.parts[0].text;
 }
 
 // Stage 1 — 語音辨識（單一 base64 chunk）
@@ -859,43 +876,27 @@ async function runStage1(base64, mimeType) {
 
 // Stage 3 — 團錄整理
 async function runStage3() {
-  const characterMapText = Object.entries(state.characterMap)
-    .map(([id, info]) => `Speaker ${id} = ${info}`)
-    .join('\n');
-
-  const userPrompt = `以下是這次 TRPG 團的逐字稿，以及說話者對照表。
-
-【說話者對照表】
-${characterMapText}
+  const userPrompt = `以下是這次 TRPG 團的逐字稿。
 
 【逐字稿】
 ${state.rawTranscript}
 
-請根據以上資料，輸出以下四種格式，用 ===FORMAT:xxx=== 分隔：
-
-===FORMAT:MARKDOWN===
-（Markdown 格式的完整團錄，使用 ## 標記章節，**粗體**標記角色名）
-
-===FORMAT:PLAIN===
-（純文字格式，無 Markdown 標記）
-
-===FORMAT:DIALOGUE===
-（對話格式，每行為「角色名：台詞或動作」，適合快速閱讀）
-
-===FORMAT:END===`;
+請根據以上資料，將其整理成單一的「純文字格式」完整團錄小說。請不要使用任何 Markdown 標記（如 **粗體** 或 ## 標題）。專注於流暢的小說敘事風格，直接輸出純文字內容即可。`;
 
   const body = {
     contents: [{
       parts: [{ text: userPrompt }]
     }],
-    generationConfig: { temperature: 0.7 },
+    generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
     systemInstruction: {
       parts: [{
         text: `你是一位專業的 TRPG 團錄整理師。你的任務是將玩家錄音的逐字稿整理成文學性強、易於閱讀的團錄。
 
+由於逐字稿中僅標示了說話者代號（如 [Speaker A]、[Speaker B] 等），請直接根據上下文、劇情推進與說話語氣，自行判斷各發言片段對應的玩家角色與 GM，並將其還原歸屬。
+
 團錄風格要求：
 - 以小說式的第三人稱敘事描寫場景與動作
-- 角色的對白用粗體「**角色名**」格式標示說話者
+- 保持純文字輸出，角色的對白前面直接加上角色名稱，不須粗體
 - 保留重要的規則判定結果（如骰子成功/失敗）
 - 剪去明顯的 OOC（Out of Character）閒聊，例如討論吃飯、廁所、閒聊等
 - 如果有明顯的空白停頓或重複，適當精簡
@@ -912,15 +913,7 @@ ${state.rawTranscript}
 // 7. 回應解析
 // ════════════════════════════════════════
 
-function parseFormatBlocks(text) {
-  const sections = {};
-  const regex = /===FORMAT:(\w+)===([\s\S]*?)(?====FORMAT:|$)/g;
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    sections[match[1]] = match[2].trim();
-  }
-  return sections;
-}
+// FORMAT Blocks parsing 已移除，以節省資源並支援單次長內容。
 
 function parseSpeakers(transcript) {
   // find SPEAKERS: A,B,C line
@@ -1025,18 +1018,21 @@ async function runStage3Pipeline() {
     return;
   }
 
-  const sections = parseFormatBlocks(responseText);
-
-  if (!sections.MARKDOWN) {
-    // fallback
-    sections.MARKDOWN = responseText;
-    sections.PLAIN = responseText;
-    sections.DIALOGUE = '（格式解析失敗，請使用 Markdown 版本）';
+  let mdText = responseText.trim();
+  if (mdText.startsWith('\`\`\`markdown')) {
+    mdText = mdText.replace(/^\`\`\`markdown\\n/, '').replace(/\\n\`\`\`$/, '');
   }
 
-  state.outputs.markdown  = sections.MARKDOWN  || '';
-  state.outputs.plain     = sections.PLAIN     || '';
-  state.outputs.dialogue  = sections.DIALOGUE  || '';
+  // 透過正則表達式簡單將 Markdown 去除成純文字格式
+  let plainText = mdText
+    .replace(/\\*\\*(.*?)\\*\\*/g, '$1')
+    .replace(/\\*(.*?)\\*/g, '$1')
+    .replace(/## /g, '')
+    .replace(/# /g, '');
+
+  state.outputs.markdown  = mdText;
+  state.outputs.plain     = plainText;
+  state.outputs.dialogue  = '提示：為確保團錄產出不受字數截斷，目前統一以 Markdown 格式高畫質輸出。\\n若需純對白提取，請直接以純文字修改。';
 
   setStepStatus('gemini2', 'done', '整理完成');
 
@@ -1058,7 +1054,7 @@ function addStepRetry(stepId, callback) {
   btn.className = 'step-retry';
   btn.textContent = '重試';
   btn.addEventListener('click', () => { btn.remove(); callback(); });
-  li.querySelector('div').appendChild(btn);
+  li.querySelector('.step-label').parentElement.appendChild(btn);
 }
 
 // ════════════════════════════════════════
@@ -1066,38 +1062,20 @@ function addStepRetry(stepId, callback) {
 // ════════════════════════════════════════
 
 function renderConfirmView() {
-  const container = document.getElementById('confirm-char-rows');
-  container.innerHTML = '';
-
-  state.detectedSpeakers.forEach(id => {
-    const row = document.createElement('div');
-    row.className = 'char-row';
-    row.dataset.speaker = id;
-    row.innerHTML = `
-      <input type="text" value="Speaker ${id}" readonly style="color:var(--color-muted)">
-      <input type="text" class="conf-name"   value="" placeholder="角色名稱">
-      <input type="text" class="conf-player" value="" placeholder="玩家名稱（選填）">
-      <span></span>
-    `;
-    container.appendChild(row);
-  });
-
   // transcript preview (show first 60 lines)
-  const lines = state.rawTranscript.split('\n').filter(l => l.trim() && !l.startsWith('SPEAKERS:'));
-  document.getElementById('transcript-preview').textContent = lines.slice(0, 60).join('\n') + (lines.length > 60 ? '\n…（更多內容）' : '');
+  try {
+    const lines = state.rawTranscript.split('\n').filter(l => l.trim() && !l.startsWith('SPEAKERS:'));
+    const previewEl = document.getElementById('transcript-preview');
+    if (previewEl) {
+      previewEl.textContent = lines.slice(0, 60).join('\n') + (lines.length > 60 ? '\n…（更多內容）' : '');
+    }
+  } catch(e) {
+    console.warn('[renderConfirmView] 發生錯誤:', e);
+  }
 }
 
 function collectConfirmMap() {
-  const rows = document.querySelectorAll('#confirm-char-rows .char-row');
   state.characterMap = {};
-  rows.forEach(row => {
-    const id = row.dataset.speaker;
-    const name   = row.querySelector('.conf-name').value.trim();
-    const player = row.querySelector('.conf-player').value.trim();
-    let label = name || `Speaker ${id}`;
-    if (player) label += `（玩家：${player}）`;
-    state.characterMap[id] = label;
-  });
 }
 
 // ════════════════════════════════════════
@@ -1105,10 +1083,70 @@ function collectConfirmMap() {
 // ════════════════════════════════════════
 
 function renderResultView() {
-  document.getElementById('result-markdown').textContent = state.outputs.markdown;
-  document.getElementById('result-plain').textContent    = state.outputs.plain;
-  document.getElementById('result-dialogue').textContent = state.outputs.dialogue;
+  document.getElementById('result-editor').value = state.outputs.text;
 }
+
+// ── Search Replace Logic ──
+function getEditorText() {
+  return document.getElementById('result-editor').value;
+}
+function setEditorText(text) {
+  document.getElementById('result-editor').value = text;
+  state.outputs.text = text;
+}
+
+document.getElementById('btn-find-next').addEventListener('click', () => {
+  const editor = document.getElementById('result-editor');
+  const findText = document.getElementById('find-text').value;
+  if (!findText) return;
+  const currentPos = editor.selectionEnd;
+  const idx = editor.value.indexOf(findText, currentPos);
+  if (idx !== -1) {
+    editor.focus();
+    editor.setSelectionRange(idx, idx + findText.length);
+  } else {
+    // Wrap around
+    const idx2 = editor.value.indexOf(findText, 0);
+    if (idx2 !== -1) {
+      editor.focus();
+      editor.setSelectionRange(idx2, idx2 + findText.length);
+    } else {
+      alert("找不到對應的文字");
+    }
+  }
+});
+
+document.getElementById('btn-replace').addEventListener('click', () => {
+  const editor = document.getElementById('result-editor');
+  const findText = document.getElementById('find-text').value;
+  const replaceText = document.getElementById('replace-text').value;
+  if (!findText) return;
+  
+  if (editor.selectionStart !== editor.selectionEnd) {
+    const selected = editor.value.substring(editor.selectionStart, editor.selectionEnd);
+    if (selected === findText) {
+      editor.setRangeText(replaceText, editor.selectionStart, editor.selectionEnd, "end");
+      state.outputs.text = editor.value; // sync back
+      return;
+    }
+  }
+  document.getElementById('btn-find-next').click();
+});
+
+document.getElementById('btn-replace-all').addEventListener('click', () => {
+  const editor = document.getElementById('result-editor');
+  const findText = document.getElementById('find-text').value;
+  const replaceText = document.getElementById('replace-text').value;
+  if (!findText) return;
+  
+  const newText = editor.value.split(findText).join(replaceText);
+  if (newText !== editor.value) {
+    setEditorText(newText);
+    alert('全部取代完畢！');
+  } else {
+    alert("找不到對應的文字");
+  }
+});
 
 // ════════════════════════════════════════
 // 11. 檔案下載
@@ -1123,53 +1161,25 @@ function triggerDownload(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-function downloadMarkdown() {
-  triggerDownload(new Blob([state.outputs.markdown], { type: 'text/markdown;charset=utf-8' }), 'session_log.md');
-}
-
 function downloadPlain() {
-  triggerDownload(new Blob([state.outputs.plain], { type: 'text/plain;charset=utf-8' }), 'session_log.txt');
+  const text = document.getElementById('result-editor').value;
+  triggerDownload(new Blob([text], { type: 'text/plain;charset=utf-8' }), 'session_log.txt');
 }
 
-function downloadDialogue() {
-  triggerDownload(new Blob([state.outputs.dialogue], { type: 'text/plain;charset=utf-8' }), 'session_log_dialogue.txt');
-}
-
-function markdownToDocxParagraphs(markdown) {
-  const { Document, Paragraph, TextRun, HeadingLevel, Packer } = docx;
-  const lines = markdown.split('\n');
-  const children = [];
-
-  lines.forEach(line => {
-    if (line.startsWith('## ')) {
-      children.push(new Paragraph({
-        heading: HeadingLevel.HEADING_2,
-        children: [new TextRun(line.replace('## ', ''))]
-      }));
-    } else if (line.startsWith('# ')) {
-      children.push(new Paragraph({
-        heading: HeadingLevel.HEADING_1,
-        children: [new TextRun(line.replace('# ', ''))]
-      }));
-    } else if (line.trim() === '') {
-      children.push(new Paragraph({ text: '' }));
-    } else {
-      const parts = line.split(/(\*\*[^*]+\*\*)/);
-      const runs = parts.map(part => {
-        if (part.startsWith('**') && part.endsWith('**')) {
-          return new TextRun({ text: part.slice(2, -2), bold: true });
-        }
-        return new TextRun(part);
-      });
-      children.push(new Paragraph({ children: runs }));
+function textToDocxParagraphs(text) {
+  const { Paragraph, TextRun } = docx;
+  const lines = text.split('\n');
+  return lines.map(line => {
+    if (line.trim() === '') {
+      return new Paragraph({ text: '' });
     }
+    return new Paragraph({ children: [new TextRun(line)] });
   });
-
-  return children;
 }
 
 function downloadDocx() {
   const { Document, Packer } = docx;
+  const text = document.getElementById('result-editor').value;
   const doc = new Document({
     sections: [{
       properties: {
@@ -1178,7 +1188,7 @@ function downloadDocx() {
           margin: { top: 1134, right: 1134, bottom: 1134, left: 1134 }
         }
       },
-      children: markdownToDocxParagraphs(state.outputs.markdown)
+      children: textToDocxParagraphs(text)
     }]
   });
 
@@ -1204,23 +1214,95 @@ document.getElementById('btn-toggle-key').addEventListener('click', function() {
   else { input.type = 'password'; this.textContent = '顯示'; }
 });
 
+document.getElementById('btn-test-api').addEventListener('click', async () => {
+  const key = document.getElementById('input-key').value.trim();
+  const selectVal = document.getElementById('input-model-select').value;
+  const model = selectVal === 'custom' ? document.getElementById('input-model').value.trim() : selectVal;
+  const alertEl = document.getElementById('alert-test');
+  if (!key) {
+    alertEl.textContent = '請先填入 API Key。';
+    alertEl.className = 'alert error show';
+    return;
+  }
+  const btn = document.getElementById('btn-test-api');
+  btn.textContent = '測試中…';
+  btn.disabled = true;
+  alertEl.className = 'alert';
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({ contents: [{ parts: [{ text: 'Reply with just the word OK.' }] }] }),
+      }
+    );
+    const data = await res.json();
+    if (res.ok) {
+      const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || '（無回應）';
+      alertEl.textContent = `✓ API 正常！模型回覆：${reply.trim()}`;
+      alertEl.className = 'alert success show';
+    } else {
+      const errMsg = data.error?.message || `HTTP ${res.status}`;
+      alertEl.textContent = `✗ API 錯誤：${errMsg}`;
+      alertEl.className = 'alert error show';
+    }
+  } catch(e) {
+    alertEl.textContent = `✗ 網路錯誤：${e.message}`;
+    alertEl.className = 'alert error show';
+  }
+  btn.textContent = '測試 API Key';
+  btn.disabled = false;
+});
+
+
 document.getElementById('btn-save-config').addEventListener('click', () => {
-  state.config.geminiKey = document.getElementById('input-key').value.trim();
-  localStorage.setItem('trpg_config', JSON.stringify(state.config));
-  const btn = document.getElementById('btn-save-config');
-  btn.textContent = '✓ 已儲存';
-  setTimeout(() => { btn.textContent = '儲存設定'; }, 1500);
+  try {
+    state.config.geminiKey = document.getElementById('input-key').value.trim();
+    const selectVal = document.getElementById('input-model-select').value;
+    state.config.geminiModel = selectVal === 'custom' ? document.getElementById('input-model').value.trim() : selectVal;
+    
+    if (!state.config.geminiModel) throw new Error("模型名稱不得為空");
+    
+    localStorage.setItem('trpg_config', JSON.stringify(state.config));
+    const btn = document.getElementById('btn-save-config');
+    btn.textContent = '✓ 已儲存';
+    setTimeout(() => { btn.textContent = '儲存設定'; }, 1500);
+  } catch (err) {
+    console.error('[儲存設定錯誤]', err);
+    alert('儲存失敗：' + err.message);
+  }
 });
 
 document.getElementById('btn-start').addEventListener('click', () => {
-  state.config.geminiKey = document.getElementById('input-key').value.trim();
-  if (!state.config.geminiKey) {
-    document.getElementById('alert-key').className = 'alert error show';
-    return;
+  try {
+    state.config.geminiKey = document.getElementById('input-key').value.trim();
+    const selectVal = document.getElementById('input-model-select').value;
+    state.config.geminiModel = selectVal === 'custom' ? document.getElementById('input-model').value.trim() : selectVal;
+
+    if (!state.config.geminiKey) {
+      document.getElementById('alert-key').className = 'alert error show';
+      return;
+    }
+    document.getElementById('alert-key').className = 'alert error';
+    localStorage.setItem('trpg_config', JSON.stringify(state.config));
+    showView('upload');
+  } catch (err) {
+    console.error('[開始初始化錯誤]', err);
+    alert('初始化失敗：' + err.message);
   }
-  document.getElementById('alert-key').className = 'alert error';
-  localStorage.setItem('trpg_config', JSON.stringify(state.config));
-  showView('upload');
+});
+
+document.getElementById('input-model-select').addEventListener('change', function() {
+  const inputEl = document.getElementById('input-model');
+  if (this.value === 'custom') {
+    inputEl.style.display = 'block';
+    inputEl.value = '';
+    inputEl.focus();
+  } else {
+    inputEl.style.display = 'none';
+    inputEl.value = this.value;
+  }
 });
 
 // ── Upload view ──
@@ -1259,21 +1341,9 @@ document.getElementById('btn-confirm').addEventListener('click', () => {
   runStage3Pipeline();
 });
 
-// ── Result view — tabs ──
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', function() {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-    this.classList.add('active');
-    document.getElementById('tab-' + this.dataset.tab).classList.add('active');
-  });
-});
-
 // ── Result view — downloads ──
-document.getElementById('dl-md').addEventListener('click', downloadMarkdown);
 document.getElementById('dl-txt').addEventListener('click', downloadPlain);
 document.getElementById('dl-docx').addEventListener('click', downloadDocx);
-document.getElementById('dl-dialogue').addEventListener('click', downloadDialogue);
 
 document.getElementById('btn-reprocess').addEventListener('click', () => {
   state.audioFile = null;
