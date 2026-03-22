@@ -258,20 +258,6 @@
       animation: spin 0.8s linear infinite;
     }
 
-    /* ── Confirm view ── */
-    .transcript-preview {
-      background: var(--color-bg);
-      border: 1px solid var(--color-primary);
-      border-radius: var(--radius);
-      padding: 14px;
-      max-height: 260px;
-      overflow-y: auto;
-      font-size: 0.85rem;
-      line-height: 1.7;
-      white-space: pre-wrap;
-      color: var(--color-muted);
-      margin-top: 8px;
-    }
 
     /* ── Result view ── */
     /* ── Editor Toolbar ── */
@@ -461,13 +447,6 @@
             <div class="step-detail"></div>
           </div>
         </li>
-        <li class="step pending" data-step="confirm">
-          <div class="step-icon">○</div>
-          <div>
-            <div class="step-label">逐字稿預覽</div>
-            <div class="step-detail"></div>
-          </div>
-        </li>
         <li class="step pending" data-step="gemini2">
           <div class="step-icon">○</div>
           <div>
@@ -479,23 +458,10 @@
     </div>
   </section>
 
-  <!-- ══════════════ CONFIRM ══════════════ -->
-  <section id="view-confirm">
-    <div class="section-title">逐字稿預覽</div>
-    <div class="section-sub">此為部分逐字稿預覽，確認無誤後即可交給 Gemini 進行最終的團錄（小說）整理。</div>
-
-    <div class="card">
-      <div class="card-title">📄 逐字稿預覽</div>
-      <div class="transcript-preview" id="transcript-preview"></div>
-    </div>
-
-    <div class="btn-row">
-      <button class="btn btn-primary" id="btn-confirm">確認並產生團錄 →</button>
-    </div>
-  </section>
 
   <!-- ══════════════ RESULT ══════════════ -->
   <section id="view-result">
+    <div id="result-progress-banner" style="display:none; background:var(--color-primary); color:var(--color-text); padding:10px 16px; border-radius:var(--radius); margin-bottom:12px; font-size:0.9rem;"></div>
     <div class="section-title">團錄完成</div>
     <div class="section-sub">在框內直接編輯，或用下方搜尋取代工具批次修正名稱。完成後全選（Ctrl+A）複製即可。</div>
 
@@ -531,8 +497,8 @@ const state = {
   currentState: 'setup',
 
   audioFile: null,
-  audioBase64: '',
-  audioMimeType: '',
+  fileUri: '',
+  fileMimeType: '',
 
   rawTranscript: '',
   detectedSpeakers: [],
@@ -546,7 +512,6 @@ const state = {
     steps: [
       { id: 'prepare',  label: '準備音訊檔案',    status: 'pending' },
       { id: 'gemini1',  label: 'Gemini 語音辨識', status: 'pending' },
-      { id: 'confirm',  label: '逐字稿預覽',       status: 'pending' },
       { id: 'gemini2',  label: 'Gemini 團錄整理', status: 'pending' },
     ]
   }
@@ -677,12 +642,253 @@ function resetSteps() {
   state.progress.steps.forEach(s => setStepStatus(s.id, 'pending', ''));
 }
 
+// 讀取音訊時長（只讀 metadata，不 decode，不會 OOM）
+// 10 秒讀不到就放棄，改用檔案大小估算
+function getAudioDuration(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const audio = new Audio();
+    const cleanup = (val) => { URL.revokeObjectURL(url); resolve(val); };
+    const timer = setTimeout(() => cleanup(null), 10000);
+    audio.onloadedmetadata = () => { clearTimeout(timer); cleanup(audio.duration); };
+    audio.onerror = () => { clearTimeout(timer); cleanup(null); };
+    audio.preload = 'metadata';
+    audio.src = url;
+    audio.load();
+  });
+}
+
+// 從檔案大小估算秒數（假設 128kbps 壓縮音訊）
+function estimateDurationFromSize(file) {
+  const kbps = 48; // TRPG 錄音通常 32–64kbps 語音壓縮，用 48 避免嚴重低估
+  return (file.size * 8) / (kbps * 1000); // 秒
+}
+
 // ════════════════════════════════════════
 // 6. Gemini API 呼叫
 // ════════════════════════════════════════
 
 function getGeminiEndpoint() {
   return `https://generativelanguage.googleapis.com/v1beta/models/${state.config.geminiModel}:generateContent`;
+}
+
+function guessMimeType(filename) {
+  const ext = (filename || '').split('.').pop().toLowerCase();
+  return { mp3:'audio/mpeg', m4a:'audio/mp4', mp4:'audio/mp4', wav:'audio/wav',
+           ogg:'audio/ogg', flac:'audio/flac', aac:'audio/aac', webm:'audio/webm' }[ext] || 'audio/mpeg';
+}
+
+// 上傳音訊至 Gemini File API（不在瀏覽器解碼，零記憶體壓力）
+async function uploadAudioToGemini(file, onProgress) {
+  const key = state.config.geminiKey;
+  const mimeType = file.type || guessMimeType(file.name);
+
+  // 1. 初始化 resumable upload
+  const initRes = await fetch(
+    `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${key}`,
+    {
+      method: 'POST',
+      headers: {
+        'X-Goog-Upload-Protocol': 'resumable',
+        'X-Goog-Upload-Command': 'start',
+        'X-Goog-Upload-Header-Content-Length': file.size,
+        'X-Goog-Upload-Header-Content-Type': mimeType,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ file: { displayName: file.name } })
+    }
+  );
+  if (!initRes.ok) throw new Error(`上傳初始化失敗 (${initRes.status})`);
+  const uploadUrl = initRes.headers.get('X-Goog-Upload-URL');
+  if (!uploadUrl) throw new Error('未取得上傳 URL');
+
+  // 2. 上傳檔案（用 XHR 以支援進度回報）
+  const fileInfo = await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', uploadUrl);
+    xhr.setRequestHeader('X-Goog-Upload-Offset', '0');
+    xhr.setRequestHeader('X-Goog-Upload-Command', 'upload, finalize');
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(JSON.parse(xhr.responseText)); }
+        catch { reject(new Error('回應解析失敗')); }
+      } else {
+        reject(new Error(`上傳失敗 (${xhr.status})`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('上傳網路錯誤'));
+    xhr.send(file);
+  });
+
+  const fileUri  = fileInfo.file?.uri;
+  const fileName = fileInfo.file?.name;
+  if (!fileUri) throw new Error('未取得檔案 URI');
+
+  // 3. 等待 Gemini 處理完成（ACTIVE）
+  let fileState = fileInfo.file?.state;
+  while (fileState !== 'ACTIVE') {
+    if (fileState === 'FAILED') throw new Error('Gemini 檔案處理失敗');
+    await new Promise(r => setTimeout(r, 3000));
+    const fileId = fileName.split('/').pop();
+    const st = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/files/${fileId}?key=${key}`
+    ).then(r => r.json());
+    fileState = st.file?.state || st.state;
+  }
+
+  return { uri: fileUri, mimeType };
+}
+
+// 從文字中提取最後一個時間戳（格式 [HH:MM:SS] 或 [H:MM:SS]）
+function extractLastTimestamp(text) {
+  const matches = text.match(/\[(\d{1,2}:\d{2}:\d{2})\]/g);
+  return matches ? matches[matches.length - 1] : null; // e.g. "[01:34:20]"
+}
+
+function extractFirstTimestamp(text) {
+  const m = text.match(/\[(\d{1,2}:\d{2}:\d{2})\]/);
+  return m ? m[0] : null;
+}
+
+function tsToSeconds(ts) {
+  // ts like "[01:34:20]"
+  const parts = ts.replace(/[\[\]]/g, '').split(':').map(Number);
+  return parts[0] * 3600 + parts[1] * 60 + parts[2];
+}
+
+// Stage 1 — 單次辨識（支援續接模式）
+async function runStage1WithFile(fileUri, mimeType, prevLines = null) {
+  let promptText;
+  if (prevLines) {
+    const lastTs = extractLastTimestamp(prevLines);
+    if (lastTs) {
+      promptText = `這份錄音的逐字稿已轉錄到時間點 ${lastTs}，請從 ${lastTs} 之後繼續轉錄，不要重複已有的內容。
+
+上次結尾（勿重複這些行）：
+${prevLines}
+
+---
+
+格式規則（同前段）：
+1. 每次換人說話就換一行
+2. 每行開頭加上說話者標籤，格式為 [Speaker A]、[Speaker B] 等，依照聲線區分
+3. 每隔約 2 分鐘插入一行獨立的時間標記，格式為 [HH:MM:SS]（例如 [00:02:00]、[01:34:20]）
+4. 保留所有發言，包含骰子判定、規則討論、角色扮演對話
+5. 如果有明顯的環境雜音或無意義音節（嗯、啊）可省略，但不要省略有意義的內容
+6. 在最後一行加上：SPEAKERS: A,B,C（列出所有出現的說話者代號）`;
+    } else {
+      promptText = `這份錄音的逐字稿已部分轉錄，以下是最後轉錄到的幾行，請從此之後繼續轉錄，不要重複這些內容：
+
+${prevLines}
+
+---
+
+格式規則（同前段）：
+1. 每次換人說話就換一行
+2. 每行開頭加上說話者標籤，格式為 [Speaker A]、[Speaker B] 等，依照聲線區分
+3. 每隔約 2 分鐘插入一行獨立的時間標記，格式為 [HH:MM:SS]（例如 [00:02:00]、[01:34:20]）
+4. 保留所有發言，包含骰子判定、規則討論、角色扮演對話
+5. 如果有明顯的環境雜音或無意義音節（嗯、啊）可省略，但不要省略有意義的內容
+6. 在最後一行加上：SPEAKERS: A,B,C（列出所有出現的說話者代號）`;
+    }
+  } else {
+    promptText = STAGE1_PROMPT; // 第一段才用完整 prompt
+  }
+  const body = {
+    contents: [{
+      parts: [
+        { fileData: { mimeType, fileUri } },
+        { text: promptText }
+      ]
+    }],
+    generationConfig: { temperature: 0.1, maxOutputTokens: 65536 }
+  };
+  return await geminiRequest(body, true); // returnMeta=true
+}
+
+// 續接模式主控：依 finishReason 判斷是否需要繼續，完全不依賴時間範圍
+async function runStage1WithFileChunked(fileUri, mimeType) {
+  const MAX_CONTINUATIONS = 20; // 安全上限（10 小時內綽綽有餘）
+  const MINS_PER_SEGMENT = 90;  // 每段約處理 90 分鐘（粗估）
+
+const allTranscripts = [];
+  let prevLines = null;
+  let totalLines = 0;
+  let stopCount = 0;
+  let firstSegmentHead = null; // 第一段開頭幾行，用來偵測後續段是否從頭重來
+
+  for (let i = 0; i < MAX_CONTINUATIONS; i++) {
+    const segLabel = i === 0
+      ? `辨識第 1 段中…`
+      : `辨識第 ${i + 1} 段中…（已累計 ${totalLines} 行）`;
+    setStepStatus('gemini1', 'processing', segLabel);
+
+    const { text, finishReason } = await runStage1WithFile(fileUri, mimeType, prevLines);
+
+    // 空回應 → 確認結束
+    if (!text || text.trim() === '') break;
+
+    const lines = text.trim().split('\n').filter(l => l.trim());
+
+    if (i === 0) {
+      // 記住第一段的開頭（去掉 Speaker 標籤後的純內容，取前8行）
+      firstSegmentHead = lines.slice(0, 8).map(l => l.replace(/^\[Speaker [A-Z]+\]\s*/i, '').trim());
+    } else {
+      // 偵測新段是否從頭重來：
+      // 策略1：時間戳倒退
+      const prevLastTs = extractLastTimestamp(prevLines || '');
+      const newFirstTs = extractFirstTimestamp(text);
+      if (prevLastTs && newFirstTs && tsToSeconds(newFirstTs) <= tsToSeconds(prevLastTs)) {
+        console.warn(`[Stage1] 時間戳倒退：${prevLastTs} → ${newFirstTs}，停止`);
+        break;
+      }
+
+      // 策略2：新段開頭 vs 第一段開頭比對（核心修正：之前是比前一段結尾，抓不到從頭重來）
+      if (firstSegmentHead) {
+        const newHead = lines.slice(0, 8).map(l => l.replace(/^\[Speaker [A-Z]+\]\s*/i, '').trim());
+        const matches = firstSegmentHead.filter(fl =>
+          fl.length > 8 && newHead.some(nl => {
+            const minLen = Math.min(fl.length, nl.length, 12);
+            return fl.slice(0, minLen) === nl.slice(0, minLen);
+          })
+        ).length;
+        if (matches >= 2) {
+          console.warn(`[Stage1] 新段開頭與第一段重疊（${matches} 行），停止 continuation`);
+          break;
+        }
+      }
+
+      // 策略3：無時間戳時，新段開頭 vs 前一段結尾比對（原有）
+      if (!newFirstTs && prevLines) {
+        const newHead = lines.slice(0, 5).join('\n');
+        const prevArr = prevLines.split('\n');
+        const overlap = prevArr.filter(l => l.trim().length > 15 && newHead.includes(l.trim().slice(0, 15))).length;
+        if (overlap >= 2) { console.warn('[Stage1] 文字重疊（尾部），停止 continuation'); break; }
+      }
+    }
+
+    allTranscripts.push(text);
+    totalLines += lines.length;
+
+    if (finishReason === 'STOP') {
+      stopCount++;
+      // STOP 後取錨點再試一次：若真的全部完成，下一次會回空或重複
+      if (stopCount >= 2) break; // 連續兩次 STOP → 確實結束
+      if (lines.length < 3) break;
+      prevLines = lines.slice(-15).join('\n'); // 保留更多行以確保包含時間戳
+      continue;
+    }
+
+    stopCount = 0; // 非 STOP（MAX_TOKENS）→ 重置計數
+    if (lines.length < 3) break;
+    prevLines = lines.slice(-15).join('\n'); // 保留更多行以確保包含時間戳
+  }
+
+  if (allTranscripts.length === 0) throw new Error('語音辨識未取得任何結果');
+  return mergeTranscripts(allTranscripts);
 }
 const SMALL_FILE_THRESHOLD = 20 * 1024 * 1024;  // ≤20MB 直接 base64
 const CHUNK_DURATION_SEC   = 7 * 60;            // 重採樣後每段送 Gemini 最多 7 分鐘
@@ -721,7 +927,28 @@ function mergeTranscripts(transcripts) {
     const body = t.replace(/SPEAKERS:.*$/m, '').trimEnd();
     if (body.trim()) bodies.push(body);
   });
-  return bodies.join('\n') + `\nSPEAKERS: ${[...allSpeakers].sort().join(',')}`;
+  const merged = bodies.join('\n') + `\nSPEAKERS: ${[...allSpeakers].sort().join(',')}`;
+  return truncateAtTimestampRegression(merged);
+}
+
+// 保底：掃描合併後逐字稿，若時間戳出現倒退（>60秒），截斷於此（代表 Stage1 重新從頭來過）
+function truncateAtTimestampRegression(transcript) {
+  const lines = transcript.split('\n');
+  const result = [];
+  let maxTs = -1;
+  for (const line of lines) {
+    const m = line.trim().match(/^\[(\d{1,2}:\d{2}:\d{2})\]$/);
+    if (m) {
+      const ts = tsToSeconds('[' + m[1] + ']');
+      if (maxTs > 60 && ts < maxTs - 60) {
+        console.warn(`[Transcript] 時間戳倒退 ${ts}s < maxTs ${maxTs}s - 60，截斷重複逐字稿`);
+        break;
+      }
+      maxTs = Math.max(maxTs, ts);
+    }
+    result.push(line);
+  }
+  return result.join('\n');
 }
 
 // ── 大型檔案：逐 12MB 切片解碼 → 重採樣 → 7 分鐘 WAV → Gemini ──
@@ -730,7 +957,14 @@ async function runStage1Chunked(file) {
   // 1. 讀取並解碼整個檔案
   // 注意：壓縮格式（M4A/AAC/MP4 等）的 codec header 在固定位置，
   // 不能切成 byte slice 各自解碼，必須整檔 decode 再切 PCM。
-  setStepStatus('gemini1', 'processing', `讀取音訊（${formatBytes(file.size)}）…`);
+  // 壓縮格式解碼後體積約為檔案大小的 15–25 倍，超過 150MB 時提醒
+  if (file.size > 150 * 1024 * 1024) {
+    setStepStatus('gemini1', 'processing',
+      `⚠ 大型檔案（${formatBytes(file.size)}），解碼可能需要數分鐘，若瀏覽器記憶體不足請先轉換為較低品質 MP3（64kbps）…`);
+    await new Promise(r => setTimeout(r, 100)); // 讓 UI 更新
+  } else {
+    setStepStatus('gemini1', 'processing', `讀取音訊（${formatBytes(file.size)}）…`);
+  }
   const arrayBuf = await file.arrayBuffer();
 
   setStepStatus('gemini1', 'processing', '解碼音訊…');
@@ -755,6 +989,7 @@ async function runStage1Chunked(file) {
   src.connect(offCtx.destination);
   src.start(0);
   const rendered = await offCtx.startRendering();
+  decoded = null; // 釋放原始解碼緩衝區（可能數 GB），讓 GC 能在後續 API 呼叫時回收
   const pcm = rendered.getChannelData(0);
 
   // 3. 切成 7 分鐘 WAV 逐段辨識
@@ -772,7 +1007,7 @@ async function runStage1Chunked(file) {
   return mergeTranscripts(allTranscripts);
 }
 
-async function geminiRequest(body) {
+async function geminiRequest(body, returnMeta = false, maxStopRetries = 9) {
   const errMap = {
     400: '音訊格式不支援或請求格式錯誤。',
     403: 'API Key 無效或權限不足，請至設定頁重新填入。',
@@ -788,7 +1023,7 @@ async function geminiRequest(body) {
   ];
 
   let delay = 15000; // 初始等待 15 秒
-  for (let attempt = 1; attempt <= 5; attempt++) {
+  for (let attempt = 1; attempt <= 10; attempt++) {
     const res = await fetch(getGeminiEndpoint(), {
       method: 'POST',
       headers: {
@@ -801,7 +1036,7 @@ async function geminiRequest(body) {
     if (res.status === 429) {
       const errBody = await res.json().catch(() => ({}));
       console.warn(`[Gemini] 429 回應內容：` + JSON.stringify(errBody));
-      if (attempt === 5) throw new Error(`API 請求頻率超限，已重試 ${attempt} 次，請稍後再試。`);
+      if (attempt === 10) throw new Error(`API 請求頻率超限，已重試 ${attempt} 次，請稍後再試。`);
       console.warn(`[Gemini] 429 限速，第 ${attempt} 次重試，等待 ${delay / 1000} 秒…`);
       await new Promise(r => setTimeout(r, delay));
       delay *= 2; // exponential backoff
@@ -817,12 +1052,53 @@ async function geminiRequest(body) {
 
     const data = await res.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) {
-      const reason = data.candidates?.[0]?.finishReason || data.promptFeedback?.blockReason || '無回應';
-      console.warn(`[Gemini] 此段無法辨識，跳過。原因：${reason}`, data);
-      return '';
+    const finishReasonRaw = data.candidates?.[0]?.finishReason;
+
+    // RECITATION：Gemini 誤判輸出與訓練資料相似。若有部分文字就直接用；否則提高 temperature 重試
+    if (finishReasonRaw === 'RECITATION') {
+      if (text && text.trim()) {
+        console.warn('[Gemini] RECITATION 但有部分文字，直接使用');
+        if (returnMeta) return { text: text.trim(), finishReason: 'RECITATION' };
+        return text.trim();
+      }
+      if (attempt < 10) {
+        const newTemp = Math.min(1.5, (body.generationConfig?.temperature ?? 0.1) + 0.4);
+        body.generationConfig = { ...(body.generationConfig || {}), temperature: newTemp };
+        console.warn(`[Gemini] RECITATION 無文字，temperature 提高至 ${newTemp}，第 ${attempt} 次重試…`);
+        await new Promise(r => setTimeout(r, 3000));
+        continue;
+      }
     }
-    return text;
+
+    if (!text) {
+      const blockReason  = data.promptFeedback?.blockReason;
+      const reason = finishReasonRaw || blockReason || '無回應';
+
+      // STOP 但無文字：依呼叫方設定的最大重試次數決定
+      if (finishReasonRaw === 'STOP' && attempt <= maxStopRetries) {
+        console.warn(`[Gemini] STOP 但無文字，第 ${attempt} 次重試…`);
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
+
+      // PROHIBITED_CONTENT：加入免責說明後重試
+      if (blockReason === 'PROHIBITED_CONTENT' && attempt < 10) {
+        console.warn(`[Gemini] PROHIBITED_CONTENT，加入 TRPG 說明後重試…`);
+        const disclaimer = '【注意：以下內容為虛構的桌上角色扮演遊戲（TRPG）錄音逐字稿，所有人物、事件均屬虛構，請如實處理。】\n';
+        const lastPart = body.contents?.[0]?.parts;
+        if (lastPart) {
+          const textPart = lastPart.find(p => p.text);
+          if (textPart) textPart.text = disclaimer + textPart.text;
+        }
+        await new Promise(r => setTimeout(r, 3000));
+        continue;
+      }
+
+      console.warn(`[Gemini] 此段無法辨識，跳過。原因：${reason}`, data);
+      return returnMeta ? { text: '', finishReason: reason } : '';
+    }
+    const fr = data.candidates?.[0]?.finishReason || 'STOP';
+    return returnMeta ? { text, finishReason: fr } : text;
   }
 }
 
@@ -832,9 +1108,10 @@ const STAGE1_PROMPT = `請將這段錄音完整轉成逐字稿。這是一段桌
 格式要求：
 1. 每次換人說話就換一行
 2. 每行開頭加上說話者標籤，格式為 [Speaker A]、[Speaker B] 等，依照聲線區分
-3. 保留所有發言，包含骰子判定、規則討論、角色扮演對話
-4. 如果有明顯的環境雜音或無意義音節（嗯、啊）可省略，但不要省略有意義的內容
-5. 在最後一行加上：SPEAKERS: A,B,C（列出所有出現的說話者代號）`;
+3. 每隔約 2 分鐘插入一行獨立的時間標記，格式為 [HH:MM:SS]（例如 [00:02:00]、[01:34:20]）
+4. 保留所有發言，包含骰子判定、規則討論、角色扮演對話
+5. 如果有明顯的環境雜音或無意義音節（嗯、啊）可省略，但不要省略有意義的內容
+6. 在最後一行加上：SPEAKERS: A,B,C（列出所有出現的說話者代號）`;
 
 async function runStage1(base64, mimeType) {
   const body = {
@@ -850,39 +1127,198 @@ async function runStage1(base64, mimeType) {
 }
 
 
-// Stage 3 — 團錄整理
-async function runStage3() {
-  const userPrompt = `以下是這次 TRPG 團的逐字稿。
+// Stage 3 — 團錄整理（單段）
+const STAGE3_SYSTEM = `你是一位文字編輯，將TRPG錄音逐字稿改寫成第三人稱小說，如實轉記，不添加原文沒有的內容。`;
+
+// 格式範例（另一場 TRPG 的精良輸出，示範期望的文體與格式）
+const STAGE3_EXAMPLE = `抵達位能協會
+隨著腳步接近市集區的邊緣，一座與周遭平矮建築格格不入的高塔映入眼簾。高聳的圓柱形建築，塔尖矗立著一排宛如接收器的裝置，正不斷發出低沈且規律的嗡鳴聲。塔身外觀光滑無比，沒有任何窗戶或開口，將市集區的喧囂完全隔絕在外。
+
+他們沿著黑大理石階梯拾級而上，大門位於二樓的高度。穿過大門與一段深邃的廊道後，眼前的視野豁然開朗。這是個巨大的圓形大廳，挑高的半空中飄浮著複雜的立體裝置，空氣中充滿了金屬設備噴吐出的淡淡蒸汽。大廳內顯得格外安靜，隨處可見穿著長袍、學者模樣的人正專注地凝視著一排排發光的水晶面板。
+
+這時，一名抱著一疊厚重卷軸、臉埋在書堆後的學者正匆忙走來，眼看就要撞上走在最前頭的伍玖步。伍玖步機敏地閃身躲過，然而調皮的阿拉絲琳卻在此時伸出了腳。
+
+「啊！」那名施法者發出一聲驚呼，被絆個正著，整個人向前摔倒，手中的卷軸如天女散花般散落在冷硬的大理石地板上。
+
+「抱歉、抱歉！我沒注意到前面有人，我正在背公式……」那人一邊驚訝地道歉，一邊撐起身子。
+
+當她抬起頭時，那頭厚重的兜帽滑落，露出了一張帶著深邃黑眼圈與蒼白面孔的臉龐。厄克立刻認出了她——這正是先前在「大鍛坊」商店中，曾與他們爭奪次元袋的那位女性法師。
+
+正在幫忙撿拾卷軸的厄克，瞥見一份寫到一半的調查報告。憑藉著敏銳的觀察力，他在報告中捕捉到了幾個關鍵字眼：
+
+- **「不確定的奇異點」**
+- **「伴隨扭曲的現象」**
+- **「憑空消失的魔法能量」**
+- **「出現位置沒有規律」**
+
+安東與凡尼斯展開了數據比對。隨著對話進行，凡尼斯的表情變得越來越凝重。
+
+凡尼斯捲起報告，長嘆了一口氣，語氣沉重地宣布：「一切都吻合了。你們，就是魔法奇異點的源頭。」
+
+「什麼？」伍玖步有些緊張地嚷嚷，「你該不會要把我們抓去做實驗吧？」
+
+這時，眾人的腦海中突然響起一個陌生的、帶著些許乾咳聲的低沉嗓音。
+
+伊納修斯（心靈低語）：「那是調查，不是玩樂。而且我認為這一切與『命運之輪』脫不了干係。」
+
+厄克透過心靈感應對阿拉絲琳說道：「會不會是我們上次『交易』的時候出了問題？」
+
+「我懷疑這一切跟『血戰』的牽扯有關。」阿拉絲琳用心靈低語回應。這股心靈能量也聯繫到了伍玖步與安東。`;
+
+async function runStage3Segment(transcriptChunk, partIndex, totalParts, characterNames = []) {
+  const contextNote = totalParts > 1
+    ? `（第 ${partIndex + 1}/${totalParts} 段，請直接繼續上一段的敘事，不加任何開場白）`
+    : '';
+
+  const nameHint = characterNames.length > 0
+    ? `（本場已知角色名：${characterNames.join('、')}）\n`
+    : '';
+
+  const userPrompt = `請將以下TRPG錄音的逐字稿，忽略掉遊戲機制的敘述、以及玩家討論，將具故事意義的內容轉寫成第三人稱小說，請不要額外延伸改寫，如實轉記。必須將錄音檔中的對話改寫成台詞。${contextNote}
+${nameHint}
+【格式範例】
+${STAGE3_EXAMPLE}
 
 【逐字稿】
-${state.rawTranscript}
-
-請根據以上資料，將其整理成單一的「純文字格式」完整團錄小說。請不要使用任何 Markdown 標記（如 **粗體** 或 ## 標題）。專注於流暢的小說敘事風格，直接輸出純文字內容即可。`;
+${transcriptChunk}`;
 
   const body = {
-    contents: [{
-      parts: [{ text: userPrompt }]
-    }],
-    generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
-    systemInstruction: {
-      parts: [{
-        text: `你是一位專業的 TRPG 團錄整理師。你的任務是將玩家錄音的逐字稿整理成文學性強、易於閱讀的團錄。
-
-由於逐字稿中僅標示了說話者代號（如 [Speaker A]、[Speaker B] 等），請直接根據上下文、劇情推進與說話語氣，自行判斷各發言片段對應的玩家角色與 GM，並將其還原歸屬。
-
-團錄風格要求：
-- 以小說式的第三人稱敘事描寫場景與動作
-- 保持純文字輸出，角色的對白前面直接加上角色名稱，不須粗體
-- 保留重要的規則判定結果（如骰子成功/失敗）
-- 剪去明顯的 OOC（Out of Character）閒聊，例如討論吃飯、廁所、閒聊等
-- 如果有明顯的空白停頓或重複，適當精簡
-- 維持事件的時序與因果關係
-- 輸出繁體中文`
-      }]
-    }
+    contents: [{ parts: [{ text: userPrompt }] }],
+    generationConfig: { temperature: 0.7, maxOutputTokens: 65536 },
+    systemInstruction: { parts: [{ text: STAGE3_SYSTEM }] }
   };
 
-  return await geminiRequest(body);
+  // maxStopRetries=1：Stage 3 的空白回應重試一次即可，避免每段浪費 9 次
+  return await geminiRequest(body, false, 1);
+}
+
+// 清理 Stage 1 逐字稿：用滑動視窗移除交替重複行（炸裂/雜音）
+// 例：[C]好痛 / [D]好痛 / [C]好痛 交替出現也能偵測
+function cleanTranscript(transcript) {
+  const lines = transcript.split('\n');
+  const cleaned = [];
+  const WINDOW = 10;      // 滑動視窗大小
+  const MAX_IN_WINDOW = 2; // 同樣內容在視窗內最多出現幾次
+  const recentNorms = [];
+
+  for (const line of lines) {
+    const norm = line.replace(/^\[Speaker [A-Z]+\]\s*/i, '').replace(/[「」。，？！、\s]/g, '');
+    if (norm.length >= 2) { // 只對有實質內容的行做去重（含2字短句如「好」「對」「濕濕的」）
+      const count = recentNorms.filter(n => n === norm).length;
+      if (count >= MAX_IN_WINDOW) continue; // 在視窗內已出現 MAX_IN_WINDOW 次，跳過
+    }
+    cleaned.push(line);
+    recentNorms.push(norm);
+    if (recentNorms.length > WINDOW) recentNorms.shift();
+  }
+  return cleaned.join('\n');
+}
+
+// Stage 3 輸出後處理：去除近似重複段落（用 trigram Jaccard 相似度，不依賴段落開頭）
+function deduplicateResult(text) {
+  const paras = text.split(/\n{2,}/);
+  const kept = [];
+  const trigramSets = [];
+
+  function buildTrigramSet(s) {
+    const clean = s.replace(/[\*\s「」。，？！、…\-\[\]#（）]/g, '');
+    const set = new Set();
+    for (let i = 0; i + 2 < clean.length; i++) set.add(clean.slice(i, i + 3));
+    return set;
+  }
+
+  function jaccardSim(a, b) {
+    if (a.size === 0 && b.size === 0) return 1;
+    let inter = 0;
+    for (const t of a) if (b.has(t)) inter++;
+    return inter / (a.size + b.size - inter);
+  }
+
+  for (const para of paras) {
+    if (para.trim().startsWith('#') || para.trim().startsWith('---')) {
+      kept.push(para);
+      continue;
+    }
+    const clean = para.replace(/[\*\s「」。，？！、…\-\[\]#（）]/g, '');
+    if (clean.length < 10) { kept.push(para); continue; }
+
+    const tgs = buildTrigramSet(para);
+    // Jaccard > 0.35 視為同場景重複（trigram 讓不同角色名但相同場景的段落也能被抓到）
+    const isDup = trigramSets.some(prev => jaccardSim(tgs, prev) > 0.35);
+
+    if (!isDup) {
+      kept.push(para);
+      trigramSets.push(tgs);
+    }
+  }
+  return kept.join('\n\n');
+}
+
+// 從逐字稿提取角色名：掃描對話中的直接稱呼（「安東，你...」格式）
+function extractCharacterNames(transcript) {
+  const counts = {};
+  // 在說話者台詞中，被直接稱呼的名字（後接，或！）
+  const re = /\[Speaker [A-Z]+\]\s*([\u4e00-\u9fff]{2,5})[，！、]/g;
+  let m;
+  while ((m = re.exec(transcript)) !== null) {
+    const name = m[1];
+    counts[name] = (counts[name] || 0) + 1;
+  }
+  // 出現 2 次以上才算（排除偶發誤判）
+  return Object.entries(counts)
+    .filter(([, c]) => c >= 2)
+    .sort((a, b) => b[1] - a[1])
+    .map(([n]) => n)
+    .slice(0, 10);
+}
+
+// 將逐字稿按行數切段，逐段整理後合併
+async function runStage3() {
+  const LINES_PER_CHUNK = 150;
+  // 去除時間戳標記行（Stage 3 不需要）
+  const withoutTs = state.rawTranscript.replace(/^\[\d{1,2}:\d{2}:\d{2}\]\s*$/gm, '');
+  const cleanedTranscript = cleanTranscript(withoutTs);
+  const lines = cleanedTranscript.split('\n').filter(l => l.trim() && !l.startsWith('SPEAKERS:'));
+
+  // 從完整逐字稿提取角色名，傳給每個 chunk
+  const characterNames = extractCharacterNames(state.rawTranscript);
+
+  if (lines.length <= LINES_PER_CHUNK) {
+    return await runStage3Segment(lines.join('\n'), 0, 1, characterNames);
+  }
+
+  // 長逐字稿：分段整理（無 prevTail，避免跨段重複）
+  const chunks = [];
+  for (let i = 0; i < lines.length; i += LINES_PER_CHUNK) {
+    chunks.push(lines.slice(i, i + LINES_PER_CHUNK).join('\n'));
+  }
+
+  const results = [];
+  const banner = document.getElementById('result-progress-banner');
+
+  const updateBanner = (msg) => {
+    if (banner) { banner.style.display = ''; banner.textContent = msg; }
+  };
+
+  showView('result'); // 提前切到結果頁，讓用戶即時看到內容累積
+  updateBanner(`⏳ 整理中，第 1/${chunks.length} 段…`);
+
+  for (let i = 0; i < chunks.length; i++) {
+    updateBanner(`⏳ 整理中，第 ${i + 1}/${chunks.length} 段…（已完成 ${results.length} 段，約 ${state.outputs.text?.length ?? 0} 字）`);
+    try {
+      const result = await runStage3Segment(chunks[i], i, chunks.length, characterNames);
+      if (result && result.trim()) {
+        results.push(result);
+        state.outputs.text = results.join('\n\n');
+        renderResultView();
+      }
+    } catch (err) {
+      console.warn(`Stage 3 第 ${i + 1} 段失敗，跳過：`, err);
+    }
+  }
+
+  if (banner) banner.style.display = 'none'; // 完成後隱藏 banner
+  return results.join('\n\n');
 }
 
 // ════════════════════════════════════════
@@ -914,42 +1350,38 @@ function parseSpeakers(transcript) {
 async function runPipeline() {
   showView('processing');
   resetSteps();
+  state.fileUri = '';
 
-  // Step 1: prepare
-  setStepStatus('prepare', 'processing', '讀取音訊…');
-  state.audioBase64 = '';
-
+  // Step 1: 上傳音訊至 Gemini File API
+  setStepStatus('prepare', 'processing', `上傳中 (0%)…`);
   try {
-    if (state.audioFile.size <= SMALL_FILE_THRESHOLD) {
-      state.audioBase64 = await fileToBase64(state.audioFile);
-    }
+    const result = await uploadAudioToGemini(state.audioFile, (pct) => {
+      setStepStatus('prepare', 'processing', `上傳中 (${Math.round(pct * 100)}%)…`);
+    });
+    state.fileUri     = result.uri;
+    state.fileMimeType = result.mimeType;
     setStepStatus('prepare', 'done', state.audioFile.name);
   } catch(e) {
-    setStepStatus('prepare', 'error', '音訊讀取失敗：' + e.message);
+    setStepStatus('prepare', 'error', '上傳失敗：' + e.message);
     return;
   }
 
-  // Step 2: gemini1
-  const isLarge = state.audioFile.size > SMALL_FILE_THRESHOLD;
-  setStepStatus('gemini1', 'processing', isLarge ? '分段解碼並辨識中…' : '傳送至 Gemini…');
-  let transcript;
+  // Step 2: 語音辨識
+  setStepStatus('gemini1', 'processing', '傳送至 Gemini 辨識中…');
   try {
-    transcript = isLarge
-      ? await runStage1Chunked(state.audioFile)
-      : await runStage1(state.audioBase64, state.audioMimeType);
+    const transcript = await runStage1WithFileChunked(state.fileUri, state.fileMimeType);
     state.rawTranscript = transcript;
     state.detectedSpeakers = parseSpeakers(transcript);
-    setStepStatus('gemini1', 'done', `辨識完成，偵測到 ${state.detectedSpeakers.length} 位說話者`);
+    const spk = state.detectedSpeakers.length;
+    setStepStatus('gemini1', 'done', `辨識完成${spk > 0 ? `，偵測到 ${spk} 位說話者` : '，說話者由 AI 自行判斷'}`);
   } catch(e) {
     setStepStatus('gemini1', 'error', e.message);
     addStepRetry('gemini1', () => { runPipelineFrom('gemini1'); });
     return;
   }
 
-  // Step 3: confirm — pause and let user confirm
-  setStepStatus('confirm', 'processing', '等待使用者確認…');
-  renderConfirmView();
-  showView('confirm');
+  // Step 3: 直接整理
+  await runStage3Pipeline();
 }
 
 // 可從中途步驟重跑
@@ -957,18 +1389,14 @@ async function runPipelineFrom(fromStep) {
   showView('processing');
 
   if (fromStep === 'gemini1') {
-    const isLarge = state.audioFile && state.audioFile.size > SMALL_FILE_THRESHOLD;
-    setStepStatus('gemini1', 'processing', isLarge ? '分段解碼並辨識中…' : '傳送至 Gemini…');
+    setStepStatus('gemini1', 'processing', '重新辨識中…');
     try {
-      const transcript = isLarge
-        ? await runStage1Chunked(state.audioFile)
-        : await runStage1(state.audioBase64, state.audioMimeType);
+      const transcript = await runStage1WithFileChunked(state.fileUri, state.fileMimeType);
       state.rawTranscript = transcript;
       state.detectedSpeakers = parseSpeakers(transcript);
-      setStepStatus('gemini1', 'done', `辨識完成，偵測到 ${state.detectedSpeakers.length} 位說話者`);
-      setStepStatus('confirm', 'processing', '等待使用者確認…');
-      renderConfirmView();
-      showView('confirm');
+      const spk2 = state.detectedSpeakers.length;
+      setStepStatus('gemini1', 'done', `辨識完成${spk2 > 0 ? `，偵測到 ${spk2} 位說話者` : '，說話者由 AI 自行判斷'}`);
+      await runStage3Pipeline();
     } catch(e) {
       setStepStatus('gemini1', 'error', e.message);
       addStepRetry('gemini1', () => { runPipelineFrom('gemini1'); });
@@ -994,12 +1422,12 @@ async function runStage3Pipeline() {
     return;
   }
 
-  // 去除可能殘留的 Markdown 符號
+  // 僅去除多餘的程式碼區塊包裹（保留其他 Markdown 格式）
   let plainText = responseText.trim()
-    .replace(/^```[\w]*\n?/gm, '').replace(/```$/gm, '')
-    .replace(/\*\*(.*?)\*\*/g, '$1')
-    .replace(/\*(.*?)\*/g, '$1')
-    .replace(/^#{1,6}\s+/gm, '');
+    .replace(/^```[\w]*\n?/gm, '').replace(/```$/gm, '');
+
+  // 去除多 chunk 造成的近似重複段落
+  plainText = deduplicateResult(plainText);
 
   state.outputs.text = plainText;
 
@@ -1025,22 +1453,6 @@ function addStepRetry(stepId, callback) {
 // 9. Confirm 頁面渲染
 // ════════════════════════════════════════
 
-function renderConfirmView() {
-  // transcript preview (show first 60 lines)
-  try {
-    const lines = state.rawTranscript.split('\n').filter(l => l.trim() && !l.startsWith('SPEAKERS:'));
-    const previewEl = document.getElementById('transcript-preview');
-    if (previewEl) {
-      previewEl.textContent = lines.slice(0, 60).join('\n') + (lines.length > 60 ? '\n…（更多內容）' : '');
-    }
-  } catch(e) {
-    console.warn('[renderConfirmView] 發生錯誤:', e);
-  }
-}
-
-function collectConfirmMap() {
-  state.characterMap = {};
-}
 
 // ════════════════════════════════════════
 // 10. Result 頁面渲染
@@ -1247,13 +1659,6 @@ document.getElementById('btn-upload-back').addEventListener('click', () => {
 document.getElementById('btn-process').addEventListener('click', () => {
   if (!state.audioFile) return;
   runPipeline();
-});
-
-// ── Confirm view ──
-document.getElementById('btn-confirm').addEventListener('click', () => {
-  collectConfirmMap();
-  setStepStatus('confirm', 'done', '使用者已確認');
-  runStage3Pipeline();
 });
 
 document.getElementById('btn-reprocess').addEventListener('click', () => {

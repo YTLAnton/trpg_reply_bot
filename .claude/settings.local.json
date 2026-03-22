@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -command \"\\(Get-Content ''D:\\\\Antons App\\\\Anti Git\\\\TRPG\\\\trpg_reply_bot\\\\_PM\\\\Result_03220200.md''\\).Count\")",
+      "Bash(powershell -command \"\\(Get-Content 'D:\\\\Antons App\\\\Anti Git\\\\TRPG\\\\trpg_reply_bot\\\\_PM\\\\Result_03221234.md' | Select-String '到我辦公室'\\).Count\")",
+      "Bash(powershell -command \"\\(Get-Content 'D:\\\\Antons App\\\\Anti Git\\\\TRPG\\\\trpg_reply_bot\\\\_PM\\\\Result_03221234.md'\\).Count; \\(Get-Content 'D:\\\\Antons App\\\\Anti Git\\\\TRPG\\\\trpg_reply_bot\\\\_PM\\\\Result_03221234.md' | Select-String '辦公室'\\).Count\")",
+      "Bash(powershell -command \"\\(Get-Content 'D:\\\\Antons App\\\\Anti Git\\\\TRPG\\\\trpg_reply_bot\\\\_PM\\\\Result_03221234.md'\\).Count\")"
+    ]
+  }
+}
