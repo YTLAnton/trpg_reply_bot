@@ -113,13 +113,6 @@
     input[type="text"]:focus,
     input[type="password"]:focus { border-color: var(--color-accent); }
 
-    .input-row {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      margin-bottom: 4px;
-    }
-
     /* ── Buttons ── */
     .btn {
       padding: 10px 20px;
@@ -328,12 +321,6 @@
       margin-bottom: 24px;
     }
 
-    hr.divider {
-      border: none;
-      border-top: 1px solid var(--color-primary);
-      margin: 20px 0;
-    }
-
     .text-muted { color: var(--color-muted); }
     .text-accent { color: var(--color-accent); }
     .mt-8  { margin-top: 8px; }
@@ -497,12 +484,9 @@ const state = {
   currentState: 'setup',
 
   audioFile: null,
-  fileUri: '',
-  fileMimeType: '',
 
   rawTranscript: '',
   detectedSpeakers: [],
-  characterMap: {},
 
   outputs: {
     text: '',
@@ -607,7 +591,6 @@ function handleFileSelect(file) {
   }
 
   state.audioFile = file;
-  state.audioMimeType = mimeTypes[ext];
 
   document.getElementById('file-name').textContent = file.name;
   document.getElementById('file-size').textContent = formatBytes(file.size);
@@ -642,28 +625,6 @@ function resetSteps() {
   state.progress.steps.forEach(s => setStepStatus(s.id, 'pending', ''));
 }
 
-// 讀取音訊時長（只讀 metadata，不 decode，不會 OOM）
-// 10 秒讀不到就放棄，改用檔案大小估算
-function getAudioDuration(file) {
-  return new Promise((resolve) => {
-    const url = URL.createObjectURL(file);
-    const audio = new Audio();
-    const cleanup = (val) => { URL.revokeObjectURL(url); resolve(val); };
-    const timer = setTimeout(() => cleanup(null), 10000);
-    audio.onloadedmetadata = () => { clearTimeout(timer); cleanup(audio.duration); };
-    audio.onerror = () => { clearTimeout(timer); cleanup(null); };
-    audio.preload = 'metadata';
-    audio.src = url;
-    audio.load();
-  });
-}
-
-// 從檔案大小估算秒數（假設 128kbps 壓縮音訊）
-function estimateDurationFromSize(file) {
-  const kbps = 48; // TRPG 錄音通常 32–64kbps 語音壓縮，用 48 避免嚴重低估
-  return (file.size * 8) / (kbps * 1000); // 秒
-}
-
 // ════════════════════════════════════════
 // 6. Gemini API 呼叫
 // ════════════════════════════════════════
@@ -678,218 +639,7 @@ function guessMimeType(filename) {
            ogg:'audio/ogg', flac:'audio/flac', aac:'audio/aac', webm:'audio/webm' }[ext] || 'audio/mpeg';
 }
 
-// 上傳音訊至 Gemini File API（不在瀏覽器解碼，零記憶體壓力）
-async function uploadAudioToGemini(file, onProgress) {
-  const key = state.config.geminiKey;
-  const mimeType = file.type || guessMimeType(file.name);
 
-  // 1. 初始化 resumable upload
-  const initRes = await fetch(
-    `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${key}`,
-    {
-      method: 'POST',
-      headers: {
-        'X-Goog-Upload-Protocol': 'resumable',
-        'X-Goog-Upload-Command': 'start',
-        'X-Goog-Upload-Header-Content-Length': file.size,
-        'X-Goog-Upload-Header-Content-Type': mimeType,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ file: { displayName: file.name } })
-    }
-  );
-  if (!initRes.ok) throw new Error(`上傳初始化失敗 (${initRes.status})`);
-  const uploadUrl = initRes.headers.get('X-Goog-Upload-URL');
-  if (!uploadUrl) throw new Error('未取得上傳 URL');
-
-  // 2. 上傳檔案（用 XHR 以支援進度回報）
-  const fileInfo = await new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', uploadUrl);
-    xhr.setRequestHeader('X-Goog-Upload-Offset', '0');
-    xhr.setRequestHeader('X-Goog-Upload-Command', 'upload, finalize');
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try { resolve(JSON.parse(xhr.responseText)); }
-        catch { reject(new Error('回應解析失敗')); }
-      } else {
-        reject(new Error(`上傳失敗 (${xhr.status})`));
-      }
-    };
-    xhr.onerror = () => reject(new Error('上傳網路錯誤'));
-    xhr.send(file);
-  });
-
-  const fileUri  = fileInfo.file?.uri;
-  const fileName = fileInfo.file?.name;
-  if (!fileUri) throw new Error('未取得檔案 URI');
-
-  // 3. 等待 Gemini 處理完成（ACTIVE）
-  let fileState = fileInfo.file?.state;
-  while (fileState !== 'ACTIVE') {
-    if (fileState === 'FAILED') throw new Error('Gemini 檔案處理失敗');
-    await new Promise(r => setTimeout(r, 3000));
-    const fileId = fileName.split('/').pop();
-    const st = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/files/${fileId}?key=${key}`
-    ).then(r => r.json());
-    fileState = st.file?.state || st.state;
-  }
-
-  return { uri: fileUri, mimeType };
-}
-
-// 從文字中提取最後一個時間戳（格式 [HH:MM:SS] 或 [H:MM:SS]）
-function extractLastTimestamp(text) {
-  const matches = text.match(/\[(\d{1,2}:\d{2}:\d{2})\]/g);
-  return matches ? matches[matches.length - 1] : null; // e.g. "[01:34:20]"
-}
-
-function extractFirstTimestamp(text) {
-  const m = text.match(/\[(\d{1,2}:\d{2}:\d{2})\]/);
-  return m ? m[0] : null;
-}
-
-function tsToSeconds(ts) {
-  // ts like "[01:34:20]"
-  const parts = ts.replace(/[\[\]]/g, '').split(':').map(Number);
-  return parts[0] * 3600 + parts[1] * 60 + parts[2];
-}
-
-// Stage 1 — 單次辨識（支援續接模式）
-async function runStage1WithFile(fileUri, mimeType, prevLines = null) {
-  let promptText;
-  if (prevLines) {
-    const lastTs = extractLastTimestamp(prevLines);
-    if (lastTs) {
-      promptText = `這份錄音的逐字稿已轉錄到時間點 ${lastTs}，請從 ${lastTs} 之後繼續轉錄，不要重複已有的內容。
-
-上次結尾（勿重複這些行）：
-${prevLines}
-
----
-
-格式規則（同前段）：
-1. 每次換人說話就換一行
-2. 每行開頭加上說話者標籤，格式為 [Speaker A]、[Speaker B] 等，依照聲線區分
-3. 每隔約 2 分鐘插入一行獨立的時間標記，格式為 [HH:MM:SS]（例如 [00:02:00]、[01:34:20]）
-4. 保留所有發言，包含骰子判定、規則討論、角色扮演對話
-5. 如果有明顯的環境雜音或無意義音節（嗯、啊）可省略，但不要省略有意義的內容
-6. 在最後一行加上：SPEAKERS: A,B,C（列出所有出現的說話者代號）`;
-    } else {
-      promptText = `這份錄音的逐字稿已部分轉錄，以下是最後轉錄到的幾行，請從此之後繼續轉錄，不要重複這些內容：
-
-${prevLines}
-
----
-
-格式規則（同前段）：
-1. 每次換人說話就換一行
-2. 每行開頭加上說話者標籤，格式為 [Speaker A]、[Speaker B] 等，依照聲線區分
-3. 每隔約 2 分鐘插入一行獨立的時間標記，格式為 [HH:MM:SS]（例如 [00:02:00]、[01:34:20]）
-4. 保留所有發言，包含骰子判定、規則討論、角色扮演對話
-5. 如果有明顯的環境雜音或無意義音節（嗯、啊）可省略，但不要省略有意義的內容
-6. 在最後一行加上：SPEAKERS: A,B,C（列出所有出現的說話者代號）`;
-    }
-  } else {
-    promptText = STAGE1_PROMPT; // 第一段才用完整 prompt
-  }
-  const body = {
-    contents: [{
-      parts: [
-        { fileData: { mimeType, fileUri } },
-        { text: promptText }
-      ]
-    }],
-    generationConfig: { temperature: 0.1, maxOutputTokens: 65536 }
-  };
-  return await geminiRequest(body, true); // returnMeta=true
-}
-
-// 續接模式主控：依 finishReason 判斷是否需要繼續，完全不依賴時間範圍
-async function runStage1WithFileChunked(fileUri, mimeType) {
-  const MAX_CONTINUATIONS = 20; // 安全上限（10 小時內綽綽有餘）
-  const MINS_PER_SEGMENT = 90;  // 每段約處理 90 分鐘（粗估）
-
-const allTranscripts = [];
-  let prevLines = null;
-  let totalLines = 0;
-  let stopCount = 0;
-  let firstSegmentHead = null; // 第一段開頭幾行，用來偵測後續段是否從頭重來
-
-  for (let i = 0; i < MAX_CONTINUATIONS; i++) {
-    const segLabel = i === 0
-      ? `辨識第 1 段中…`
-      : `辨識第 ${i + 1} 段中…（已累計 ${totalLines} 行）`;
-    setStepStatus('gemini1', 'processing', segLabel);
-
-    const { text, finishReason } = await runStage1WithFile(fileUri, mimeType, prevLines);
-
-    // 空回應 → 確認結束
-    if (!text || text.trim() === '') break;
-
-    const lines = text.trim().split('\n').filter(l => l.trim());
-
-    if (i === 0) {
-      // 記住第一段的開頭（去掉 Speaker 標籤後的純內容，取前8行）
-      firstSegmentHead = lines.slice(0, 8).map(l => l.replace(/^\[Speaker [A-Z]+\]\s*/i, '').trim());
-    } else {
-      // 偵測新段是否從頭重來：
-      // 策略1：時間戳倒退
-      const prevLastTs = extractLastTimestamp(prevLines || '');
-      const newFirstTs = extractFirstTimestamp(text);
-      if (prevLastTs && newFirstTs && tsToSeconds(newFirstTs) <= tsToSeconds(prevLastTs)) {
-        console.warn(`[Stage1] 時間戳倒退：${prevLastTs} → ${newFirstTs}，停止`);
-        break;
-      }
-
-      // 策略2：新段開頭 vs 第一段開頭比對（核心修正：之前是比前一段結尾，抓不到從頭重來）
-      if (firstSegmentHead) {
-        const newHead = lines.slice(0, 8).map(l => l.replace(/^\[Speaker [A-Z]+\]\s*/i, '').trim());
-        const matches = firstSegmentHead.filter(fl =>
-          fl.length > 8 && newHead.some(nl => {
-            const minLen = Math.min(fl.length, nl.length, 12);
-            return fl.slice(0, minLen) === nl.slice(0, minLen);
-          })
-        ).length;
-        if (matches >= 2) {
-          console.warn(`[Stage1] 新段開頭與第一段重疊（${matches} 行），停止 continuation`);
-          break;
-        }
-      }
-
-      // 策略3：無時間戳時，新段開頭 vs 前一段結尾比對（原有）
-      if (!newFirstTs && prevLines) {
-        const newHead = lines.slice(0, 5).join('\n');
-        const prevArr = prevLines.split('\n');
-        const overlap = prevArr.filter(l => l.trim().length > 15 && newHead.includes(l.trim().slice(0, 15))).length;
-        if (overlap >= 2) { console.warn('[Stage1] 文字重疊（尾部），停止 continuation'); break; }
-      }
-    }
-
-    allTranscripts.push(text);
-    totalLines += lines.length;
-
-    if (finishReason === 'STOP') {
-      stopCount++;
-      // STOP 後取錨點再試一次：若真的全部完成，下一次會回空或重複
-      if (stopCount >= 2) break; // 連續兩次 STOP → 確實結束
-      if (lines.length < 3) break;
-      prevLines = lines.slice(-15).join('\n'); // 保留更多行以確保包含時間戳
-      continue;
-    }
-
-    stopCount = 0; // 非 STOP（MAX_TOKENS）→ 重置計數
-    if (lines.length < 3) break;
-    prevLines = lines.slice(-15).join('\n'); // 保留更多行以確保包含時間戳
-  }
-
-  if (allTranscripts.length === 0) throw new Error('語音辨識未取得任何結果');
-  return mergeTranscripts(allTranscripts);
-}
 const SMALL_FILE_THRESHOLD = 20 * 1024 * 1024;  // ≤20MB 直接 base64
 const CHUNK_DURATION_SEC   = 7 * 60;            // 重採樣後每段送 Gemini 最多 7 分鐘
 const CHUNK_SAMPLE_RATE    = 16000;             // 16kHz mono 語音足夠
@@ -917,39 +667,6 @@ function pcmToWav(samples, sampleRate) {
   return new Blob([buf], { type: 'audio/wav' });
 }
 
-// ── 合併多段逐字稿 ──
-function mergeTranscripts(transcripts) {
-  const allSpeakers = new Set();
-  const bodies = [];
-  transcripts.forEach(t => {
-    const m = t.match(/SPEAKERS:\s*([A-Z,\s]+)/i);
-    if (m) m[1].split(',').map(s => s.trim()).filter(Boolean).forEach(s => allSpeakers.add(s));
-    const body = t.replace(/SPEAKERS:.*$/m, '').trimEnd();
-    if (body.trim()) bodies.push(body);
-  });
-  const merged = bodies.join('\n') + `\nSPEAKERS: ${[...allSpeakers].sort().join(',')}`;
-  return truncateAtTimestampRegression(merged);
-}
-
-// 保底：掃描合併後逐字稿，若時間戳出現倒退（>60秒），截斷於此（代表 Stage1 重新從頭來過）
-function truncateAtTimestampRegression(transcript) {
-  const lines = transcript.split('\n');
-  const result = [];
-  let maxTs = -1;
-  for (const line of lines) {
-    const m = line.trim().match(/^\[(\d{1,2}:\d{2}:\d{2})\]$/);
-    if (m) {
-      const ts = tsToSeconds('[' + m[1] + ']');
-      if (maxTs > 60 && ts < maxTs - 60) {
-        console.warn(`[Transcript] 時間戳倒退 ${ts}s < maxTs ${maxTs}s - 60，截斷重複逐字稿`);
-        break;
-      }
-      maxTs = Math.max(maxTs, ts);
-    }
-    result.push(line);
-  }
-  return result.join('\n');
-}
 
 // ── 大型檔案：逐 12MB 切片解碼 → 重採樣 → 7 分鐘 WAV → Gemini ──
 // 記憶體永遠只持有「目前 slice 的解碼結果」，峰值 ~350MB，與檔案大小無關。
@@ -1001,10 +718,12 @@ async function runStage1Chunked(file) {
     const wavBlob = pcmToWav(pcm.slice(ci * chunkSamples, (ci + 1) * chunkSamples), CHUNK_SAMPLE_RATE);
     const base64  = await fileToBase64(wavBlob);
     setStepStatus('gemini1', 'processing', `辨識第 ${ci + 1}/${numChunks} 段…`);
-    allTranscripts.push(await runStage1(base64, 'audio/wav'));
+    const chunkTranscript = await runStage1(base64, 'audio/wav');
+    allTranscripts.push(chunkTranscript);
   }
 
-  return mergeTranscripts(allTranscripts);
+  // 切段模式：各段 PCM 已是連續不重疊的音訊，不需要 regression 截斷，直接合併
+  return allTranscripts.map(t => t.trimEnd()).filter(t => t.trim()).join('\n');
 }
 
 async function geminiRequest(body, returnMeta = false, maxStopRetries = 9) {
@@ -1106,12 +825,44 @@ async function geminiRequest(body, returnMeta = false, maxStopRetries = 9) {
 const STAGE1_PROMPT = `請將這段錄音完整轉成逐字稿。這是一段桌上角色扮演遊戲（TRPG）的錄音，有多位玩家與主持人（GM）在說話。
 
 格式要求：
-1. 每次換人說話就換一行
-2. 每行開頭加上說話者標籤，格式為 [Speaker A]、[Speaker B] 等，依照聲線區分
-3. 每隔約 2 分鐘插入一行獨立的時間標記，格式為 [HH:MM:SS]（例如 [00:02:00]、[01:34:20]）
-4. 保留所有發言，包含骰子判定、規則討論、角色扮演對話
-5. 如果有明顯的環境雜音或無意義音節（嗯、啊）可省略，但不要省略有意義的內容
-6. 在最後一行加上：SPEAKERS: A,B,C（列出所有出現的說話者代號）`;
+1. 每次換人說話就空一行，說話者與時間戳寫在同一行（格式：語者N MM:SS），下一行寫說話內容
+2. 依照聲線區分說話者，用語者1、語者2、語者3...編號，整段錄音說話者編號保持一致
+3. 保留所有發言，包含骰子判定、規則討論、角色扮演對話
+4. 明顯的環境雜音或無意義音節（嗯、啊）可省略，但不要省略有意義的內容
+
+格式範例：
+語者1 00:04
+好，那你們進到這個，店鋪的門廊裡面，你們看到地上有一些腳印，顯示這裡就是曾經有頻繁的出入，那這邊有一扇雙開的門，這時候是關著
+
+語者2 00:42
+這邊很黑嗎？蠻黑的，但我有黑暗視覺
+
+語者1 00:52
+那裡有一個站在最前面的應該是安東，因為你想起了這一切感覺，你會站比較前面，還有一個負責開鎖的
+
+語者2 01:03
+那我就稍微稍微動動，看那個門，看他是不是鎖著的
+
+語者1 01:14
+不是鎖著的，那所以當你就是鬆動的時候，他就打開了，那一打開的時候，你就感覺到有蠟燭的光線，從這裡流瀉到你們的前廳，那同時你也聽到了一些交談聲，這裡面竟然是有人的
+
+語者3 02:39
+我們來自東方
+
+語者1 02:40
+那這個人，他掃視了你們所有人，然後停在了安東的身上，他看著你然後就說，你是來找愛墨的嗎？
+
+語者2 03:19
+那愛墨人
+
+語者3 03:21
+呢？透過阿拉絲琳心靈低語給安東，說你什麼時候學會欺瞞
+
+語者2 03:30
+我沒有啊，我就問他
+
+語者1 03:39
+那他就點了點頭說他在，你們等一下，然後那個人就轉頭走向了後頭，推開了後方的這扇門走了出去`;
 
 async function runStage1(base64, mimeType) {
   const body = {
@@ -1127,45 +878,314 @@ async function runStage1(base64, mimeType) {
 }
 
 
-// Stage 3 — 團錄整理（單段）
+// Stage 2 — 團錄整理（單段）
 const STAGE3_SYSTEM = `你是一位文字編輯，將TRPG錄音逐字稿改寫成第三人稱小說，如實轉記，不添加原文沒有的內容。`;
 
 // 格式範例（另一場 TRPG 的精良輸出，示範期望的文體與格式）
-const STAGE3_EXAMPLE = `抵達位能協會
+const STAGE3_EXAMPLE = `## **抵達位能協會**
+
 隨著腳步接近市集區的邊緣，一座與周遭平矮建築格格不入的高塔映入眼簾。高聳的圓柱形建築，塔尖矗立著一排宛如接收器的裝置，正不斷發出低沈且規律的嗡鳴聲。塔身外觀光滑無比，沒有任何窗戶或開口，將市集區的喧囂完全隔絕在外。
 
-他們沿著黑大理石階梯拾級而上，大門位於二樓的高度。穿過大門與一段深邃的廊道後，眼前的視野豁然開朗。這是個巨大的圓形大廳，挑高的半空中飄浮著複雜的立體裝置，空氣中充滿了金屬設備噴吐出的淡淡蒸汽。大廳內顯得格外安靜，隨處可見穿著長袍、學者模樣的人正專注地凝視著一排排發光的水晶面板。
+他們沿著黑大理石階梯拾級而上，大門位於二樓的高度。穿過大門與一段深邃的廊道後，眼前的視野豁然開朗。這是個巨大的圓形大廳，挑高的半空中飄浮著複雜的立體裝置，空氣中充滿了金屬設備噴吐出的淡淡蒸汽。
 
-這時，一名抱著一疊厚重卷軸、臉埋在書堆後的學者正匆忙走來，眼看就要撞上走在最前頭的伍玖步。伍玖步機敏地閃身躲過，然而調皮的阿拉絲琳卻在此時伸出了腳。
+大廳內顯得格外安靜，隨處可見穿著長袍、學者模樣的人正專注地凝視著一排排發光的水晶面板。
+
+這時，一名抱著一疊厚重卷軸、臉埋在書堆後的學者正匆忙走來，眼看就要撞上走在最前頭的**伍玖步**。**伍玖步**機敏地閃身躲過，然而調皮的**阿拉絲琳**卻在此時伸出了腳。
 
 「啊！」那名施法者發出一聲驚呼，被絆個正著，整個人向前摔倒，手中的卷軸如天女散花般散落在冷硬的大理石地板上。
 
 「抱歉、抱歉！我沒注意到前面有人，我正在背公式……」那人一邊驚訝地道歉，一邊撐起身子。
 
-當她抬起頭時，那頭厚重的兜帽滑落，露出了一張帶著深邃黑眼圈與蒼白面孔的臉龐。厄克立刻認出了她——這正是先前在「大鍛坊」商店中，曾與他們爭奪次元袋的那位女性法師。
+當她抬起頭時，那頭厚重的兜帽滑落，露出了一張帶著深邃黑眼圈與蒼白面孔的臉龐。**厄克**立刻認出了她——這正是先前在「大鍛坊」商店中，曾與他們爭奪次元袋的那位女性法師。她似乎並未第一時間認出眾人，只是低頭碎念著：「我背到哪了？我背到哪了？」並忙著撿拾地上的紙張。
 
-正在幫忙撿拾卷軸的厄克，瞥見一份寫到一半的調查報告。憑藉著敏銳的觀察力，他在報告中捕捉到了幾個關鍵字眼：
+「嘿，那個誰，妳還記得嗎？我們幫妳少花了一筆冤枉錢，妳還記得嗎？」**厄克**提醒道。
+
+女法師困惑地抬頭，「冤枉錢？什麼意思？」
+
+「妳不是想買一個雕有美麗花紋的次元袋嗎？」
+
+女法師愣了一下，隨即瞪大了眼睛，驚喜地喊道：「啊！是你們！怎麼會來這裡？你們好、你們好！」她站起身來，腰間掛著一個精緻的小袋子，上頭正閃爍著微弱的魔法能量，看來她後來確實買到了心儀的物品。
+
+得知眾人是為了請教魔法問題而來，女法師一邊用法術引導地上的卷軸一張張飛回懷中，一邊嘆了口氣：「魔法問題啊……今天大家都很忙，應該說最近大家都很忙。前幾天我們的觀測儀注意到，法印城區域出現了怪異的位面能量，所以大家都在熬夜趕工調查那到底是什麼。」
+
+正在幫忙撿拾卷軸的**厄克**，瞥見一份寫到一半的調查報告。憑藉著敏銳的觀察力，他在報告中捕捉到了幾個關鍵字眼：
 
 - **「不確定的奇異點」**
 - **「伴隨扭曲的現象」**
 - **「憑空消失的魔法能量」**
 - **「出現位置沒有規律」**
 
-安東與凡尼斯展開了數據比對。隨著對話進行，凡尼斯的表情變得越來越凝重。
+報告上標註了一個座標點，但在缺乏對照的情況下，尚無法得知具體對應法印城的何處。
+
+**厄克**將手中的紙張遞還給女法師，試探性地問道：「如果只有這些資料，卻沒有標示出現的時間點，你們找得到規律嗎？」
+
+赫賽爾法師一邊用法術整理卷軸，一邊向眾人解釋這場危機的棘手之處。
+
+「這個時間……它的發生極不規律，」赫賽爾有些焦慮地抓了抓頭髮，「有時候相隔數個『頂峰』與『極峰』——也就是你們口中的白天與黑夜；但有時候發生的頻率又快得驚人，數值變動得毫無邏輯。」
+
+她開始低聲碎念，彷彿陷入了某種學術死胡同：「而且這些魔法能量的潰散點，一下消失、一下又突然出現，完全摸不著頭緒。」
+
+安東·史柯爾敏銳地察覺到其中的聯繫。他回憶起隊友們最近一次遭遇的不幸。
+
+「我記得，上一次……」安東沉思著，「應該是伍玖步吧？那是發生在幾天前？」
+
+他在心中盤算了一下時間：那是在「四個極峰」之前，也就是大約四天前。
+
+安東抬起頭，直視赫賽爾：「妳剛才提到的其中一次波動，是不是發生在四個極峰之前？」
+
+赫賽爾愣住了，手中的動作戛然而止，她驚訝地瞪大眼睛：「妳……難道妳是預言家？還是占卜師？的確是那個時間點！妳知道些什麼嗎？」
+
+安東語氣嚴肅：「或許妳這份報告中提到的奇異點，跟我們想請教的魔法問題，有著密不可分的關係。除了妳之外，這份報告還有誰參與？我想直接跟負責人討論，或許能更快找到答案。」
+
+「我們整個位能協會目前都在全力處理這件事，」赫賽爾嘆了口氣，「因為我們過去從未見過如此頻繁且詭異的現象。如果你們願意的話，跟我來一趟辦公室吧。」
+
+赫賽爾微微駝著背，以一種有些急促的小跑步帶領眾人穿梭在高塔之中。沿途，許多研究員紛紛投來好奇的目光，有人甚至推了推單片眼鏡，試圖看清這群神祕的訪客。
+
+---
+
+他們爬了幾層樓梯，來到一間宛如資料庫般塞滿檔案的辦公室。房間中央懸浮著一顆發著強光的巨大光球，兩名男子正站在光球前交談。
+
+其中一人是穿著長袍的人類男性，看起來像是這裡的主管；而另一人竟然是冒險者們在命運之輪見過的熟面孔——一名肩膀上爬著一隻「腦鼠」的墮心魔。
+
+赫賽爾有些急促地引薦道：「凡尼斯，你得聽聽這些人的說法！他們似乎知道那個奇異點到底是怎麼回事。」
+
+那位被稱為凡尼斯的主管推了推眼鏡，神情嚴肅地看向眾人：「怎麼回事？」
+
+安東隨即與凡尼斯展開了數據比對。他們將冒險者每一次死亡的時間，與位能協會觀測到的「魔法奇異點」紀錄一一對照。隨著對話進行，凡尼斯的表情變得越來越凝重。
 
 凡尼斯捲起報告，長嘆了一口氣，語氣沉重地宣布：「一切都吻合了。你們，就是魔法奇異點的源頭。」
 
 「什麼？」伍玖步有些緊張地嚷嚷，「你該不會要把我們抓去做實驗吧？」
 
+「不，我們不會研究你們，」凡尼斯搖了搖頭，語氣中帶著一絲無奈，「但我們有個不情之請。如果你們死亡的時間與奇異點完全吻合，這代表你們每一次的死亡與復活，都會大量吸取當下位置的能量。」
+
+「會怎樣？吸乾能量後法印城會塌掉嗎？」阿拉絲琳驚訝地問。
+
+凡尼斯神情冷峻：「法印城是否會坍塌尚不可知，但這絕對會引起巨大的混亂。每當你們死亡並異狀重生時，周圍的事物也會隨之改變。」
+
+一旁的墮心魔翻開筆記，語氣平板地讀出觀測到的異象：「『灰燼使者』那邊傳來消息，他們的一名成員突然改變了性別；還有幾個傳送門突然失去了效力，再也無法使用。這些異象的位置，都與你們出沒的地點吻合。」
+
+為了防止法印城陷入進一步的動盪，凡尼斯提出了他的解決方案。
+
+「這就是我的不情之請，」凡尼斯看著眾人，「我希望你們能待在位能協會中接受保護，嚴禁再次死亡。」
+
+「這不就是軟禁嗎？」伍玖步抗議道，「我們還有使命要完成，不能被關在這裡！」
+
+「如果你能解決我們死亡重生的問題，我們自然不用待在這裡，」阿拉絲琳補充道。
+
+凡尼斯搖了搖頭：「我們目前對這種異常一無所知，這是多重宇宙中從未有過的案例，簡直就像是……某種錯誤。為了法印城的穩定，我建議你們接受我們的『封印』。在那之中，你們會失去時間感並陷入沉睡，直到我們查出原因為止。這對你們來說，是最安全且沒有損害的選擇。」
+
+「你說沒感覺，但時間還是在流逝啊！」安東反駁道，「如果我們有重要的事情要辦，我們會直接錯過一切！」
+
+「但比起整個法印城的崩潰，個人的事務必須讓步，」凡尼斯的語氣不容置疑，「如果你們離開法印城，或許問題能暫時緩解，但在沒弄清楚源頭前，這場災難只會隨你們蔓延到其他位面。」
+
+面對眾人的質疑與抗議，**凡尼斯**推了推眼鏡，語氣堅定地解釋位能協會的立場。
+
+「我很遺憾，」**凡尼斯**說道，「法印城僅僅是我們試圖監控並保護的其中一個地方，位能協會的最高宗旨是『保護整個多重宇宙』。如果讓你們離開，我們將失去觀測點，屆時災難蔓延，我們將無從插手。」
+
+**阿拉絲琳**諷刺地挑了挑眉：「所以你們這是在當『多重宇宙糾察隊』囉？」
+
+**凡尼斯**並未理會這份嘲諷，轉而看向**阿拉絲琳**，目光深邃：「如果妳的家鄉也曾遭遇過如同天災般的魔法危機，妳或許就能理解為何我們對此如此敏感。你們聽說過那個試圖創造『十環法術』的法師嗎？那次意外幾乎讓整個世界的魔法能量崩潰，那是我們永遠的警示。」
+
+一旁的**安東**與**伍玖步**面面相覷，雖然不完全理解「十環法術」的恐怖，但從**凡尼斯**那身為倖存者的沉重語氣中，他們感受到了這場危機的嚴峻。
+
+儘管理解了危機，但眾人顯然不打算乖乖接受「封印」。
+
+「我覺得你的方案很爛，」**阿拉絲琳**直言不諱，「要是我們被封印個一百年你都沒解決問題，那我們不就永遠睡下去了？既然要研究，最好的方式難道不是讓我們在外面行動，你們派人近距離觀測嗎？」
+
+**凡尼斯**沉吟片刻，看向了身旁那位一直沉默不語、肩膀上坐著腦鼠的墮心魔。「那麼，就讓**伊納修斯**跟著你們吧。他受僱於本協會，是一位極其優秀且具備深厚知識的偵探。」
+
+「偵探？」**阿拉絲琳**狐疑地看著那個幾天前還在賭場出沒的傢伙，「他看起來一點都不像會魔法的人，早上還在賭場玩得不亦樂乎呢。」
+
 這時，眾人的腦海中突然響起一個陌生的、帶著些許乾咳聲的低沉嗓音。
 
-伊納修斯（心靈低語）：「那是調查，不是玩樂。而且我認為這一切與『命運之輪』脫不了干係。」
+**伊納修斯（心靈低語）：**「那是調查，不是玩樂。而且我認為這一切與『命運之輪』脫不了干係。」
 
-厄克透過心靈感應對阿拉絲琳說道：「會不會是我們上次『交易』的時候出了問題？」
+**伍玖步**揮了揮拳頭，挑釁道：「要當保鏢也得看實力。如果你連我都打不贏，還談什麼保護我們？來吧，切磋一下，點到為止！」
 
-「我懷疑這一切跟『血戰』的牽扯有關。」阿拉絲琳用心靈低語回應。這股心靈能量也聯繫到了伍玖步與安東。`;
+**凡尼斯**眼見阻止不了，只能無奈地退到一旁。「**伊納修斯**，別真的傷到他們；各位，也請克制，切磋第一。」
 
-async function runStage3Segment(transcriptChunk, partIndex, totalParts, characterNames = []) {
+**伊納修斯**優雅地甩開了他的偵探風衣，那隻名為「腦鼠」的同伴乖巧地跳到一旁的書架躲藏。
+
+「如你所願，切磋一下吧，」**伊納修斯**的聲音再次在眾人腦海響起，「要是你一不小心落敗，我就當作是提前領取我的酬勞了。」
+
+**伍玖步**深吸一口氣，開始運轉體內的自然之力。 「等一下！給我一點時間準備，我要施個法，順便休息一下補個元氣！」
+
+**安東**在一旁打趣道：「你乾脆在這邊睡一晚，明天早上再打好了。」
+
+經過一番短暫的調整，**伍玖步**釋放出他的自然靈氣，身體周遭籠罩著淡淡的綠光。他眼神一凜，對著**伊納修斯**喊道： 「來吧！讓我看看你這不會魔法的偵探有什麼本事！」
+
+**伊納修斯**神色如常，那顆沒有眉毛的額頭微微一動。 「那麼，開始吧。」
+
+「加油！」阿拉絲琳輕拍伍玖步的肩膀，在這一瞬間，她悄悄施展了支援的法術，試圖爲同伴增加勝算。
+
+位能協會的空間內，氣氛隨着切磋的開始而變得緊繃。
+
+伊納休斯踏着穩健而緩慢的步伐，每一步都彷彿踏在人心跳的頻率上。當他靠近伍玖步時，一種無形的精神波動猛然震盪，直擊伍玖步的腦海。
+
+伍玖步感受到大腦一陣刺痛，但他憑藉着過人的意志力，硬生生地抵抗住了那股試圖攪亂他思緒的神祕異能。他迅速後撤，動作敏捷得如同林間閃現的殘影，拉開了足足六十呎的距離。
+
+「我的魔能爆可是能打一百二十呎遠的！」伍玖步大喊一聲，隨即兩發紫黑色的魔能爆破空而出，準確地轟擊在伊納休斯身上。
+
+伊納休斯發出一聲痛苦的悶哼，兩股隱形的力量直擊他的軀幹，但他並未倒下，只是繼續用那種令人不安的緩慢腳步逼近。「別離這麼遠，我還得走向你呢。」他的聲音直接在伍玖步的腦袋裏響起。
+
+隨着距離縮短，伊納休斯再次發動了心靈震爆。這一次，伍玖步感覺腦中一片空白，身體像是不聽使喚般僵硬在原地。他陷入了「震懾」的狀態，四肢無力，甚至連說話的力氣都幾乎喪失，只能眼睜睜看着對手靠近。
+
+「哈哈！我也想看看他到底要開動什麼呢。」一旁的安東大笑着，似乎在看一場精彩的表演。
+
+伍玖步試圖咬舌自盡或是拔出武器反抗，但身體卻像是被封印了一般。伊納休斯走到他面前，臉上的觸鬚慢慢盤據到伍玖步的臉上，低沉的聲音再次響起：「那我就開動了。」
+
+「好了，到此爲止吧，別再繼續下去了。」凡尼斯及時出聲制止。
+
+伊納休斯收回觸鬚，緩緩退後半步。
+
+「你不是說你吃素嗎？」厄克問道。
+
+「我不主動狩獵無辜的人，但在戰鬥中爲了自我保護，有時候會不小心吃到一些……」
+
+「吃到什麼？腦袋嗎？」阿拉絲琳挑眉問道。
+
+伊納休斯笑了笑，語氣平靜地解釋：「開玩笑的，我不會吃你們的同伴。我真的是個偵探。」
+
+衆人開始詢問關於剛才那招震懾的範圍。伊納休斯指了指前方大約六十呎的錐形空間，「只要在我的視線範圍內都有效果，所以下次如果發生狀況，記得別站在我面前讓我震懾到。」
+
+「伍玖步是木精靈吧？難怪看起來挺好吃的，也算是有點素的成分。」衆人開玩笑地說着，而伍玖步依然呆立在原地，似乎還沒從剛才的精神衝擊中完全恢復。
+
+待這場切磋告一段落，厄克向凡尼斯詢問是否有相關的書籍或資料可以研究他們身上發生的種種異狀。
+
+「這裡的檔案庫歡迎你們翻閱。」凡尼斯大方地承諾，「只要能找到你們身上異狀的根源，我們都願意配合。」
+
+「那書可以外借嗎？」厄克追問，甚至開玩笑地看向伊納休斯，「還是伊納休斯其實也懂一些傳送門的技術，可以幫我們把書送出來？」
+
+伊納休斯搖了搖頭，「傳送門的知識我略有研究，但我沒辦法像那些半人馬一樣擁有天生的直覺。」
+
+凡尼斯遞給麥克一本厚重的古籍，書名標註着《魔法能量與其隱藏的異常》，那沉甸甸的重量讓身爲法師學徒的地侏身體不由得向前一傾。
+
+「這本書相當淺顯易懂。」凡尼斯環視衆人，語氣透着些許無奈，「如果你們對外平面或魔法能量有疑惑，這裡面或許有解答。但我們協會的人早已讀得通透，卻沒能找到與你們狀況相符的紀錄。你們的情況，是史無前例的新發現。」
+
+阿拉絲琳皺起眉頭，機敏地追問：「既然你們的知識庫都派不上用場，那位偵探伊納休斯打算怎麼調查？難不成要在大街上盲目尋找嗎？」
+
+「我們會追蹤你們引發的現實扭曲現象。」凡尼斯耐心地解釋，「我們相信，在你們上次『死亡』時，一定有某種力量作用在你們身上。如果能有更多實驗數據，或許能找到魔法漏洞的開端。」
+
+「那……是不是讓我們再死一次看看就知道了？」伍玖步語出驚人地提議。
+
+凡尼斯眉頭深鎖，「雖是個方法，但風險太大。除非到了絕境，否則別輕易嘗試。既然你們是活生生的人，或許可以回憶一下，在發生這一切之前，你們曾去過哪裡？接觸過什麼魔法異變？」
+
+隨後，赫賽爾遞過一份研究報告，上面記錄着魔法奇異點的追蹤數據。衆人驚訝地發現，除了他們有意識的幾次死亡外，報告上竟標註了多達上百次的異常點。
+
+阿拉絲琳仔細對應地圖與解說，發現在法印城各處都曾出現過他們的蹤跡，其中最令她在意的，是上次死亡的地點——杜鵑角。
+
+「會不會是我們上次『交易』的時候出了問題？」厄克透過心靈感應對阿拉絲琳說道。
+
+「我懷疑這一切跟『血戰』的牽扯有關。」阿拉絲琳用心靈低語迴應。這股心靈能量也聯繫到了伍玖步與安東，雖然伍玖步正處於震懾的呆滯中，但他依然能在腦海中聽到夥伴們的討論。
+
+「嘿，能先把我的身體打醒嗎？」伍玖步在意識中無奈地喊着，但夥伴們顯然更專注於當前的謎團。
+
+「我們那次交易是跟誰？那個叫熊大的矮人嗎？」厄克在腦中回憶着。
+
+「不，他是幫我們改造武器的。」阿拉絲琳糾正道，「我們是透過鬥技場的斯派拉才接觸到外面貿易聯盟的人。或許斯派拉知道更多內情，或者……直接找舍米沙卡幫忙？她說過我們欠她一個人情。」
+
+此時，凡尼斯正拿出一些藥水遞給伊納休斯作爲酬勞，兩方人馬各自在私下的頻道中低聲交流。麥克與赫賽爾則在一旁熱烈討論着魔法能量的流動。
+
+在心靈低語的共鳴中，衆人達成了一個方向：杜鵑角，那個他們曾經倒下的地方，藏着解開命運鎖鏈的關鍵。
+
+位能協會的交鋒暫告一段落，安東看向身旁的夥伴們，爽快地說：「我都跟著大家的，沒什麼特別的想法。」
+
+阿拉絲琳則顯得更具目的性，「我想直接去杜鵑角調查，但在那之前，能不能先給我一份我們死亡的時間與地點報告？我想之後可以對比一下。」
+
+「沒問題，看來妳也要踏上偵探這條路了。」凡尼斯微笑著，指引眾人到一旁的寫字檯騰抄數據。
+
+待眾人記下關鍵訊息，凡尼斯神色鄭重地叮囑：「那我們保持聯絡吧。伊納休斯會向我轉達任何新發現。雖然位能協會的人手不算充裕，但我們很樂意提供知識與魔法上的協助。」
+
+「那……有沒有什麼諮詢魔法可以先解決伍玖步的問題？」安東指著依然呆若木雞的同伴問道。
+
+凡尼斯無奈地搖搖頭，「奪心魔的心靈震爆不屬於魔法性效果，我們無力解除，只能等他自行掙脫。」
+
+「真是不凡的天賦啊。」厄克感嘆著，隨即露出壞笑走向伍玖步，伸手呵他的癢，「嘿，我們乾脆把他剝光、東西偷走，就丟他在這好了！」
+
+就在厄克準備「上下其手」的瞬間，伍玖步的眼神恢復了清明，他猛地一縮，驚叫道：「你在幹嘛？你要對我做什麼？」
+
+兩人隨即展開一場敏捷的較量，伍玖步在驚嚇之餘爆發出驚人的運動能力，左閃右避，總算徹底從僵直中清醒過來。
+
+「安東，快幫我治療一下，我快死了！」伍玖步心有餘悸地喊著。
+
+安東沒好氣地看了他一眼，「你又沒受傷，只是心理受創吧？我們找個地方休息一個小時，幫你『補一補』。」
+
+此時，一直保持沉默的伊納休斯拿出了小筆記本，一隻小老鼠輕巧地爬上他的肩頭。
+
+他平靜地問道：「看來你們有了下一步打算？打算去哪裡調查些什麼？」
+
+「我們要去杜鵑角看看。」阿拉絲琳簡短地回答。
+
+「那可真是太好了，我喜歡有挑戰性的謎題。」
+
+---
+
+隨後，在麥克的帶領下，冒險者小隊穿過了法印城繁忙的大市集。麥克一路上低聲唸誦著難懂的方位術語，在迷宮般的街道中繞行了大半個小時。
+
+「來了！就在那裡！」麥克興奮地指著前方。
+
+出現在眾人眼前的竟是一間熱氣騰騰的公共澡堂。濃厚的煙霧中，幾個巨大的身影緩緩走動。麥克一邊抹著額頭上的大汗，一邊小聲叮嚀：「這裡的溫度真高……我們得借用一下他們的更衣室，但動作要快，這澡堂的老闆脾氣可不太好！」
+
+眾人跟著麥克矮小的身影衝進更衣室。麥克迅速拉開一處隱蔽的隔間簾幕，將一張寫滿訊息的小便條投進水槽中沖走。接著，他拿出一根小木棍，在排水孔中摸索一番，牆面上隨即泛起了一陣微弱的魔法光芒。
+
+然而，正當傳送的路徑即將開啟時，一個魁梧的身影出現在伊納休斯身後。那是一個披著皮圍裙、手上拿著鋼刷的中年女性，她用足以震碎屋頂的大嗓門怒吼道：
+
+「你們給錢了沒！一人兩枚銀幣！」
+
+「嘿，兩枚銀幣是吧？」眾人交換了眼神。阿拉絲琳第一時間無視她衝進傳送門，但此時老闆娘揮舞著手中的鋼刷，對著伊納修斯恐嚇道：「我知道你們想用傳送門，但來了就得付錢！」
+
+伊納修斯無奈地打開錢包，掏出了錢，安東也隨手丟出兩枚銀幣。
+
+伍玖步見誘惑人類的法術對老闆娘不起作用，正準備強行帶著麥克衝入傳送門時，厄克豪邁地擲出兩枚金幣，並帶著一絲傲氣對老闆娘說：「多的錢就當作買妳的態度吧。」
+
+老闆娘收起鋼刷哼了一聲，隨即轉身離去。
+
+---
+
+眾人順利穿過傳送門，眼前景象一變，來到了一處平凡無奇的街角。
+
+這裡對他們來說有些眼熟，似乎就在萬行者旅館附近。雖然夜幕即將低垂，但周遭的景致仍清晰可辨。
+
+根據地圖上的標記，他們來到了一棟兩層樓高的店鋪前。這間商店看起來已經廢棄許久，招牌上站著幾隻生鏽的機械杜鵑，這便是他們尋找的地點——「杜鵑角」。從店面的裝潢與招牌推斷，這裡以前應該是一間鐘錶行。
+
+「所以杜鵑角是一間鐘錶行？還是地名？」眾人疑惑地打量著這棟建築。此時大門深鎖，所有的窗戶都被木板牢牢釘死，完全沒有營業的跡象。
+
+「我有盜賊工具，或許可以直接處理這扇鎖。」阿拉絲琳提議道。
+
+由於正值傍晚，街上仍有行人往來，為了掩人耳目，伍玖步決定站到一旁的木箱上，開始表演他新學會的「癡呆」。他裝瘋賣傻地搖晃身體，甚至從帽子裡變出東西。厄克也配合地在空中盤旋，大聲吆喝：「快來看啊！新學派出現了，他正在表演什麼叫作『大智若愚』！」
+
+這場荒誕的表演吸引了一些路人的目光，多數人露出困惑或膽怯的神情繞道而行，卻吸引了一名打扮如同流浪者的老人駐足。老人拄著拐杖，饒有興致地看著伍玖步的表演，開口問道：「年輕人，要怎樣才能大智若愚啊？」
+
+「那你問我就對了，我剛失智，我很清楚。」伍玖步胡言亂語地回答。
+
+「所以這到底是『有智』還是『沒智』啊？」老人追問，「如果你都失智了，那你不是真的愚嗎？」
+
+「你怎麼知道我是愚？我還是隻大肥魚呢！」伍玖步指著自己，與老人展開了一場充滿禪意（或者說胡言亂語）的哲學對話。
+
+趁著伍玖步成功吸引注意力的空檔，阿拉絲琳悄悄移動到門邊，屏息凝神，開始嘗試破解那道緊鎖的大門。
+
+阿拉絲琳在木門前與鎖芯搏鬥，金屬摩擦的細碎聲響伴隨她的急躁。就在她感到挫敗與挫折的瞬間，一段陳舊且沉重的記憶如潮水般湧入腦海。
+
+她想起了那個混亂的時刻，自己正拚命想打開一扇門，好讓她與躲藏的家人們能進入安全的空間。當時，一群魔鬼不疾不徐地跟在他們身後，那冰冷的壓迫感至今仍清晰可辨。記憶中的魔鬼小嘍囉正低聲交談，聲音聽起來帶著殘酷的興奮：「我們來追殺他們，是因為他們一族裡有跟『神』的力量⋯⋯。」
+
+現實中，阿拉絲琳驚醒過來，手心的冷汗浸濕了工具。她看了一眼還在與老人辯論「魚之樂」的伍玖步，對眾人說道：「不行，這鎖太複雜了，我得再試一次。」
+
+此時，安東·史柯爾見路人越聚越多，為了替夥伴爭取更多時間，他走到路邊，假裝身體不適，隨即朝著空地噴吐出大量的強酸。酸液侵蝕地面的嗤嗤聲與刺鼻味，嚇得行人紛紛落荒而逃。原本圍觀的老人也被這突如其來的「龍裔異狀」與伍玖步的怪異哲學弄得一頭霧水，搖了搖頭，咕墼著「成為肥魚才能大智若愚」神情恍惚地離去了。
+
+安東的「驚人之舉」清空了街道，阿拉絲琳深吸一口氣，耳邊迴響著記憶中魔鬼的低語。這一次，隨著「喀噠」一聲脆響，沉重的木門終於被推開了。
+
+店鋪內是一片死寂的灰暗，沒有任何燭火。然而，當眾人踏入這充滿灰塵的門廊時，安東卻停下了腳步。
+
+一股強烈的既視感襲向這名龍裔工匠。在他眼前，灰暗的店面彷彿穿梭時空，變回了曾經燈火通明、賓客如織的模樣。在那幻象中，一名眼神明亮的獸人工匠穿著與安東相似的服飾，正對著他微笑點頭，並有力地與他握手，最後遞給他一封封蠟完整的信件。
+
+「我好像對這個地方有印象⋯⋯」安東閉上眼，透過心靈感應對同伴們說道：「我想起來了，我曾在這裡跟一位獸人工匠交流，他給了我一封信，但記憶到這裡就斷了。」
+
+阿拉絲琳將安東的訊息轉達給其他人，雖然伍玖步與厄克並沒有產生類似的共鳴，但他們都意識到這名「獸人工匠」極可能是關鍵的接頭人。門廊內什麼都沒有，但地面上凌亂的腳印顯示這裡不久前仍有頻繁的活動。
+
+在門廊左側，一扇緊閉的內門正靜靜等待著他們。`;
+
+async function runStage2Segment(transcriptChunk, partIndex, totalParts, characterNames = []) {
   const contextNote = totalParts > 1
     ? `（第 ${partIndex + 1}/${totalParts} 段，請直接繼續上一段的敘事，不加任何開場白）`
     : '';
@@ -1174,12 +1194,19 @@ async function runStage3Segment(transcriptChunk, partIndex, totalParts, characte
     ? `（本場已知角色名：${characterNames.join('、')}）\n`
     : '';
 
-  const userPrompt = `請將以下TRPG錄音的逐字稿，忽略掉遊戲機制的敘述、以及玩家討論，將具故事意義的內容轉寫成第三人稱小說，請不要額外延伸改寫，如實轉記。必須將錄音檔中的對話改寫成台詞。${contextNote}
+  const userPrompt = `將以下逐字稿轉寫成第三人稱小說。忽略遊戲機制敘述及玩家場外討論，只保留具故事意義的內容，如實轉記，不額外延伸，對話改寫成台詞。${contextNote}
 ${nameHint}
-【格式範例】
+注意事項：
+- 角色名稱必須全篇統一，依照逐字稿上下文判斷真實姓名，不要自行創造角色名，不要在名字後方加括號標示 Speaker 代號。
+- 逐字稿中「我就說」、「你就說」、「他就說」是玩家描述角色行為的口頭語，改寫時請直接忽略這些詞，寫角色的動作或台詞即可。
+- GM（主持人）的敘述改寫成第三人稱旁白，不要出現「主持人說」或任何指涉主持人的字眼。
+
+參考文體範例：
 ${STAGE3_EXAMPLE}
 
-【逐字稿】
+---
+以下是本次逐字稿。直接輸出改寫後的小說正文，不加任何說明或開頭語；若這段沒有故事性內容，直接輸出空白即可：
+
 ${transcriptChunk}`;
 
   const body = {
@@ -1188,7 +1215,7 @@ ${transcriptChunk}`;
     systemInstruction: { parts: [{ text: STAGE3_SYSTEM }] }
   };
 
-  // maxStopRetries=1：Stage 3 的空白回應重試一次即可，避免每段浪費 9 次
+  // maxStopRetries=1：Stage 2 的空白回應重試一次即可，避免每段浪費 9 次
   return await geminiRequest(body, false, 1);
 }
 
@@ -1202,7 +1229,7 @@ function cleanTranscript(transcript) {
   const recentNorms = [];
 
   for (const line of lines) {
-    const norm = line.replace(/^\[Speaker [A-Z]+\]\s*/i, '').replace(/[「」。，？！、\s]/g, '');
+    const norm = line.replace(/^語者\d+\s+[\d:]+\s*/, '').replace(/[「」。，？！、\s]/g, '');
     if (norm.length >= 2) { // 只對有實質內容的行做去重（含2字短句如「好」「對」「濕濕的」）
       const count = recentNorms.filter(n => n === norm).length;
       if (count >= MAX_IN_WINDOW) continue; // 在視窗內已出現 MAX_IN_WINDOW 次，跳過
@@ -1214,7 +1241,7 @@ function cleanTranscript(transcript) {
   return cleaned.join('\n');
 }
 
-// Stage 3 輸出後處理：去除近似重複段落（用 trigram Jaccard 相似度，不依賴段落開頭）
+// Stage 2 輸出後處理：去除近似重複段落（用 trigram Jaccard 相似度，不依賴段落開頭）
 function deduplicateResult(text) {
   const paras = text.split(/\n{2,}/);
   const kept = [];
@@ -1243,8 +1270,8 @@ function deduplicateResult(text) {
     if (clean.length < 10) { kept.push(para); continue; }
 
     const tgs = buildTrigramSet(para);
-    // Jaccard > 0.35 視為同場景重複（trigram 讓不同角色名但相同場景的段落也能被抓到）
-    const isDup = trigramSets.some(prev => jaccardSim(tgs, prev) > 0.35);
+    // Jaccard > 0.60 視為同場景重複（0.35 太激進，會誤刪不同場景的合法段落）
+    const isDup = trigramSets.some(prev => jaccardSim(tgs, prev) > 0.60);
 
     if (!isDup) {
       kept.push(para);
@@ -1257,12 +1284,16 @@ function deduplicateResult(text) {
 // 從逐字稿提取角色名：掃描對話中的直接稱呼（「安東，你...」格式）
 function extractCharacterNames(transcript) {
   const counts = {};
-  // 在說話者台詞中，被直接稱呼的名字（後接，或！）
-  const re = /\[Speaker [A-Z]+\]\s*([\u4e00-\u9fff]{2,5})[，！、]/g;
-  let m;
-  while ((m = re.exec(transcript)) !== null) {
-    const name = m[1];
-    counts[name] = (counts[name] || 0) + 1;
+  // 掃描內容行（跳過語者標籤行），找被直接稱呼的名字（後接，或！）
+  const lines = transcript.split('\n');
+  const re = /^([\u4e00-\u9fff]{2,5})[，！、]/;
+  for (const line of lines) {
+    if (/^語者\d+\s/.test(line)) continue; // 跳過說話者標籤行
+    const m = line.match(re);
+    if (m) {
+      const name = m[1];
+      counts[name] = (counts[name] || 0) + 1;
+    }
   }
   // 出現 2 次以上才算（排除偶發誤判）
   return Object.entries(counts)
@@ -1273,18 +1304,18 @@ function extractCharacterNames(transcript) {
 }
 
 // 將逐字稿按行數切段，逐段整理後合併
-async function runStage3() {
+async function runStage2() {
   const LINES_PER_CHUNK = 150;
-  // 去除時間戳標記行（Stage 3 不需要）
+  // 去除時間戳標記行（Stage 2 不需要）
   const withoutTs = state.rawTranscript.replace(/^\[\d{1,2}:\d{2}:\d{2}\]\s*$/gm, '');
   const cleanedTranscript = cleanTranscript(withoutTs);
-  const lines = cleanedTranscript.split('\n').filter(l => l.trim() && !l.startsWith('SPEAKERS:'));
+  const lines = cleanedTranscript.split('\n').filter(l => l.trim());
 
   // 從完整逐字稿提取角色名，傳給每個 chunk
   const characterNames = extractCharacterNames(state.rawTranscript);
 
   if (lines.length <= LINES_PER_CHUNK) {
-    return await runStage3Segment(lines.join('\n'), 0, 1, characterNames);
+    return await runStage2Segment(lines.join('\n'), 0, 1, characterNames);
   }
 
   // 長逐字稿：分段整理（無 prevTail，避免跨段重複）
@@ -1306,14 +1337,20 @@ async function runStage3() {
   for (let i = 0; i < chunks.length; i++) {
     updateBanner(`⏳ 整理中，第 ${i + 1}/${chunks.length} 段…（已完成 ${results.length} 段，約 ${state.outputs.text?.length ?? 0} 字）`);
     try {
-      const result = await runStage3Segment(chunks[i], i, chunks.length, characterNames);
+      let result = await runStage2Segment(chunks[i], i, chunks.length, characterNames);
       if (result && result.trim()) {
-        results.push(result);
-        state.outputs.text = results.join('\n\n');
-        renderResultView();
+        // 過濾模型輸出的解釋/說明文字（非小說正文）
+        const metaPattern = /根據您提供的逐字稿|此處並無新的情節|沒有.*故事.*內容|以上是.*改寫|以下是.*範例|^好的[，,]/;
+        if (metaPattern.test(result.trim())) {
+          console.log(`[Stage2] 第 ${i+1} 段輸出為模型說明文字，跳過`);
+        } else {
+          results.push(result);
+          state.outputs.text = results.join('\n\n');
+          renderResultView();
+        }
       }
     } catch (err) {
-      console.warn(`Stage 3 第 ${i + 1} 段失敗，跳過：`, err);
+      console.warn(`Stage 2 第 ${i + 1} 段失敗，跳過：`, err);
     }
   }
 
@@ -1328,19 +1365,13 @@ async function runStage3() {
 // FORMAT Blocks parsing 已移除，以節省資源並支援單次長內容。
 
 function parseSpeakers(transcript) {
-  // find SPEAKERS: A,B,C line
-  const m = transcript.match(/SPEAKERS:\s*([A-Z,\s]+)/i);
-  if (m) {
-    return m[1].split(',').map(s => s.trim()).filter(Boolean);
-  }
-  // fallback: extract from [Speaker X] tags
   const speakers = new Set();
-  const re = /\[Speaker ([A-Z])\]/g;
+  const re = /^語者(\d+)\s/gm;
   let match;
   while ((match = re.exec(transcript)) !== null) {
-    speakers.add(match[1]);
+    speakers.add('語者' + match[1]);
   }
-  return [...speakers].sort();
+  return [...speakers].sort((a, b) => parseInt(a.slice(2)) - parseInt(b.slice(2)));
 }
 
 // ════════════════════════════════════════
@@ -1350,38 +1381,27 @@ function parseSpeakers(transcript) {
 async function runPipeline() {
   showView('processing');
   resetSteps();
-  state.fileUri = '';
 
-  // Step 1: 上傳音訊至 Gemini File API
-  setStepStatus('prepare', 'processing', `上傳中 (0%)…`);
-  try {
-    const result = await uploadAudioToGemini(state.audioFile, (pct) => {
-      setStepStatus('prepare', 'processing', `上傳中 (${Math.round(pct * 100)}%)…`);
-    });
-    state.fileUri     = result.uri;
-    state.fileMimeType = result.mimeType;
-    setStepStatus('prepare', 'done', state.audioFile.name);
-  } catch(e) {
-    setStepStatus('prepare', 'error', '上傳失敗：' + e.message);
-    return;
-  }
+  // Step 1: 準備（顯示檔案名稱）
+  setStepStatus('prepare', 'done', state.audioFile.name);
 
-  // Step 2: 語音辨識
-  setStepStatus('gemini1', 'processing', '傳送至 Gemini 辨識中…');
+  // Step 2: 語音辨識（切段後逐段送 Gemini，完整覆蓋全錄音）
   try {
-    const transcript = await runStage1WithFileChunked(state.fileUri, state.fileMimeType);
+    const transcript = await runStage1Chunked(state.audioFile);
     state.rawTranscript = transcript;
     state.detectedSpeakers = parseSpeakers(transcript);
     const spk = state.detectedSpeakers.length;
-    setStepStatus('gemini1', 'done', `辨識完成${spk > 0 ? `，偵測到 ${spk} 位說話者` : '，說話者由 AI 自行判斷'}`);
+    const transcriptLines = transcript.split('\n').filter(l => l.trim()).length;
+    console.log(`[Stage1] 逐字稿完成，共 ${transcriptLines} 行`);
+    setStepStatus('gemini1', 'done', `辨識完成，共 ${transcriptLines} 行${spk > 0 ? `，${spk} 位說話者` : ''}`);
   } catch(e) {
     setStepStatus('gemini1', 'error', e.message);
     addStepRetry('gemini1', () => { runPipelineFrom('gemini1'); });
     return;
   }
 
-  // Step 3: 直接整理
-  await runStage3Pipeline();
+  // Step 3: 小說整理
+  await runStage2Pipeline();
 }
 
 // 可從中途步驟重跑
@@ -1391,12 +1411,13 @@ async function runPipelineFrom(fromStep) {
   if (fromStep === 'gemini1') {
     setStepStatus('gemini1', 'processing', '重新辨識中…');
     try {
-      const transcript = await runStage1WithFileChunked(state.fileUri, state.fileMimeType);
+      const transcript = await runStage1Chunked(state.audioFile);
       state.rawTranscript = transcript;
       state.detectedSpeakers = parseSpeakers(transcript);
       const spk2 = state.detectedSpeakers.length;
-      setStepStatus('gemini1', 'done', `辨識完成${spk2 > 0 ? `，偵測到 ${spk2} 位說話者` : '，說話者由 AI 自行判斷'}`);
-      await runStage3Pipeline();
+      const lines2 = transcript.split('\n').filter(l => l.trim()).length;
+      setStepStatus('gemini1', 'done', `辨識完成，共 ${lines2} 行${spk2 > 0 ? `，${spk2} 位說話者` : ''}`);
+      await runStage2Pipeline();
     } catch(e) {
       setStepStatus('gemini1', 'error', e.message);
       addStepRetry('gemini1', () => { runPipelineFrom('gemini1'); });
@@ -1405,20 +1426,20 @@ async function runPipelineFrom(fromStep) {
   }
 
   if (fromStep === 'gemini2') {
-    await runStage3Pipeline();
+    await runStage2Pipeline();
   }
 }
 
-async function runStage3Pipeline() {
+async function runStage2Pipeline() {
   showView('processing');
   setStepStatus('gemini2', 'processing', '傳送至 Gemini，整理中…');
 
   let responseText;
   try {
-    responseText = await runStage3();
+    responseText = await runStage2();
   } catch(e) {
     setStepStatus('gemini2', 'error', e.message);
-    addStepRetry('gemini2', () => { runStage3Pipeline(); });
+    addStepRetry('gemini2', () => { runStage2Pipeline(); });
     return;
   }
 
@@ -1427,7 +1448,10 @@ async function runStage3Pipeline() {
     .replace(/^```[\w]*\n?/gm, '').replace(/```$/gm, '');
 
   // 去除多 chunk 造成的近似重複段落
+  const beforeDedup = plainText.split(/\n{2,}/).length;
   plainText = deduplicateResult(plainText);
+  const afterDedup = plainText.split(/\n{2,}/).length;
+  console.log(`[Stage2] dedup：${beforeDedup} 段落 → ${afterDedup} 段落（砍掉 ${beforeDedup - afterDedup} 個）`);
 
   state.outputs.text = plainText;
 
@@ -1663,10 +1687,9 @@ document.getElementById('btn-process').addEventListener('click', () => {
 
 document.getElementById('btn-reprocess').addEventListener('click', () => {
   state.audioFile = null;
-  state.audioBase64 = '';
   document.getElementById('file-info').style.display = 'none';
-  document.getElementById('btn-process').disabled = true;
   document.getElementById('file-input').value = '';
+  document.getElementById('btn-process').disabled = true;
   showView('upload');
 });
 
@@ -1678,8 +1701,7 @@ document.getElementById('btn-regen').addEventListener('click', () => {
   resetSteps();
   setStepStatus('prepare', 'done', state.audioFile ? state.audioFile.name : '（已有逐字稿）');
   setStepStatus('gemini1', 'done', '使用既有逐字稿');
-  setStepStatus('confirm', 'done', '使用既有對照表');
-  runStage3Pipeline();
+  runStage2Pipeline();
 });
 
 // ════════════════════════════════════════
