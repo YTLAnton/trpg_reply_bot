@@ -20,7 +20,9 @@ Phase 3c：Files API + 整檔單次請求（無限迴圈/超 token）
     ↓
 Phase 4a：PCM 切段（≤2hr）+ ffmpeg.wasm 0.11.6（>2hr）→ SharedArrayBuffer 問題
     ↓
-Phase 5（當前）：PCM 切段（≤2hr）+ Service Worker COOP/COEP + ffmpeg.wasm（>2hr）
+Phase 5：PCM 切段（≤2hr）+ Service Worker COOP/COEP + ffmpeg.wasm（>2hr）
+    ↓
+Phase 6（最新）：加入時間戳的全局偏移計算（HH:MM:SS）並完美對齊，修復分割去重防線
 ```
 
 ---
@@ -134,8 +136,19 @@ Phase 5（當前）：PCM 切段（≤2hr）+ Service Worker COOP/COEP + ffmpeg.
 |------|------|
 | **狀態** | 🔧 當前版本 |
 | **核心做法** | 在頁面啟動時註冊 `sw.js` Service Worker；SW 攔截所有 fetch 回應並注入 `Cross-Origin-Opener-Policy: same-origin` 與 `Cross-Origin-Embedder-Policy: require-corp`，使瀏覽器解封 `SharedArrayBuffer`；路徑 0/1/2 邏輯完全不變 |
-| **前提條件** | 需以 `http://localhost` 或 `https://` 方式開啟頁面（`file://` 無法使用 Service Worker）；初次開啟會自動重整一次以激活 SW |
+| **前置條件** | 需以 `http://localhost` 或 `https://` 方式開啟頁面（`file://` 無法使用 Service Worker）；初次開啟會自動重整一次以激活 SW |
 | **三條路徑** | 同方案 4a，路徑 0/1 不變，路徑 2 `SharedArrayBuffer` 現已可用 |
+
+---
+
+### 方案 6（最新）：加入絕對時間偏移 (Offset) 強化重疊去重演算法
+
+| 項目 | 說明 |
+|------|------|
+| **狀態** | ✅ 已修復並部署 |
+| **失敗與痛點** | 方案 5 雖解決了大檔切段與記憶體崩潰，但在合倂時發生嚴重的「鬼打牆」(重複拼接)。原因在於 Gemini 辨識切段時，每一個切段的時間戳都從 `00:00` 重新開始，導致防重複合併邏輯 (`mergeTranscriptsByTimestamp`) 的嚴格時間遞增判斷全盤失效。如果錄音長度超過1小時，單純使用 MM:SS 也很容易導致進位混亂。 |
+| **核心解法** | **不依賴 Gemini 做時間位移算數。**我們在取得各片段前保留「絕對起始偏移秒數」(例如第二段起於 570秒)。待 Gemini 吐出該片段原始文字後，前端呼叫 `shiftTranscriptTimestamps` 對逐字稿中所有 `語者N MM:SS` 進行字串解析與秒數疊加，最終強制格式化為 **`HH:MM:SS`** (`00:09:30`)。 |
+| **實際效果** | 將每一段逐字稿回歸「絕對時間」座標！有了 HH:MM:SS 墊底之後，合併系統再次能完美識別出前段結尾與後段開頭的重疊點 (overlap)。大幅度根絕了長語音轉換中的「無限重複拼接(鬼打牆)」噩夢，也補齊了時間的「小時」區塊。 |
 
 ---
 

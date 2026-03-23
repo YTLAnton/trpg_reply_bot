@@ -773,6 +773,30 @@ async function splitAudioWithFfmpeg(file, onProgress) {
   return blobs;
 }
 
+// ── 時間戳位移轉換：將相對時間 (MM:SS) 轉換成加上片段偏移量的絕對時間 (HH:MM:SS) ──
+function formatTime(totalSeconds) {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = Math.floor(totalSeconds % 60);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function shiftTranscriptTimestamps(text, offsetSec) {
+  if (!text) return text;
+  const re = /^(語者\d+\s+)(\d{1,2}:\d{2}(?::\d{2})?)/gm;
+  return text.replace(re, (match, prefix, timeStr) => {
+    const parts = timeStr.split(':').map(Number);
+    let sec = 0;
+    if (parts.length === 3) {
+      sec = parts[0] * 3600 + parts[1] * 60 + parts[2];
+    } else {
+      sec = parts[0] * 60 + parts[1];
+    }
+    const newSec = sec + offsetSec;
+    return prefix + formatTime(newSec);
+  });
+}
+
 // ── 依時間戳去重合併各段逐字稿（路徑2 使用）──
 // 每段有 overlap，合併時截掉下一段開頭與上一段重疊的行
 function mergeTranscriptsByTimestamp(transcripts) {
@@ -834,7 +858,8 @@ async function runStage1Chunked(file) {
     setStepStatus('gemini1', 'processing', `辨識中（${formatBytes(file.size)}）…`);
     const base64   = await fileToBase64(file);
     const mimeType = guessMimeType(file.name);
-    return await runStage1(base64, mimeType);
+    const rawText  = await runStage1(base64, mimeType);
+    return shiftTranscriptTimestamps(rawText, 0);
   }
 
   // 讀取時長，決定路徑 1 或 2
@@ -884,7 +909,9 @@ async function runStage1Chunked(file) {
       const wavBlob = pcmToWav(pcm.slice(ci * chunkSamples, (ci + 1) * chunkSamples), CHUNK_SAMPLE_RATE);
       const base64  = await fileToBase64(wavBlob);
       setStepStatus('gemini1', 'processing', `辨識第 ${ci + 1} / ${numChunks} 段…`);
-      allTranscripts.push(await runStage1(base64, 'audio/wav'));
+      const offsetSec = ci * CHUNK_DURATION_SEC;
+      const rawText = await runStage1(base64, 'audio/wav');
+      allTranscripts.push(shiftTranscriptTimestamps(rawText, offsetSec));
     }
     return allTranscripts.map(t => t.trimEnd()).filter(t => t.trim()).join('\n');
 
@@ -909,7 +936,9 @@ async function runStage1Chunked(file) {
     for (let i = 0; i < segments.length; i++) {
       const base64 = await fileToBase64(segments[i]);
       setStepStatus('gemini1', 'processing', `辨識第 ${i + 1} / ${segments.length} 段…`);
-      allTranscripts.push(await runStage1(base64, mimeType));
+      const offsetSec = Math.max(0, i * FFMPEG_SEGMENT_SEC - FFMPEG_OVERLAP_SEC);
+      const rawText = await runStage1(base64, mimeType);
+      allTranscripts.push(shiftTranscriptTimestamps(rawText, offsetSec));
     }
     return mergeTranscriptsByTimestamp(allTranscripts);
   }
