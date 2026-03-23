@@ -748,11 +748,11 @@ async function splitAudioWithFfmpeg(file, onProgress) {
   ff.FS('writeFile', inputName, await fetchFile(file));
 
   const durationSec    = await getAudioDuration(file);
-  const totalSegments  = Math.ceil(durationSec / FFMPEG_SEGMENT_SEC);
+  const totalSegments = Math.ceil(durationSec / (FFMPEG_SEGMENT_SEC - FFMPEG_OVERLAP_SEC));
   const blobs = [];
 
   for (let i = 0; i < totalSegments; i++) {
-    const start   = Math.max(0, i * FFMPEG_SEGMENT_SEC - FFMPEG_OVERLAP_SEC);
+    const start = i * (FFMPEG_SEGMENT_SEC - FFMPEG_OVERLAP_SEC);
     const isLast  = (i === totalSegments - 1);
     const segDur  = isLast ? undefined : (FFMPEG_SEGMENT_SEC + FFMPEG_OVERLAP_SEC);
     const outName = `seg_${String(i).padStart(3, '0')}.${ext}`;
@@ -783,7 +783,7 @@ function formatTime(totalSeconds) {
 
 function shiftTranscriptTimestamps(text, offsetSec) {
   if (!text) return text;
-  const re = /^(語者\d+\s+)(\d{1,2}:\d{2}(?::\d{2})?)/gm;
+  const re = /^([\*\-\s]*[^\s]{1,15}\s+)(\d{1,2}:\d{2}(?::\d{2})?)/gm;
   return text.replace(re, (match, prefix, timeStr) => {
     const parts = timeStr.split(':').map(Number);
     let sec = 0;
@@ -802,7 +802,7 @@ function shiftTranscriptTimestamps(text, offsetSec) {
 function mergeTranscriptsByTimestamp(transcripts) {
   if (!transcripts.length) return '';
 
-  const tsRegex = /^語者\d+\s+(\d{1,2}:\d{2}(?::\d{2})?)/;
+  const tsRegex = /^[\*\-\s]*[^\s]{1,15}\s+(\d{1,2}:\d{2}(?::\d{2})?)/;
 
   function parseTs(ts) {
     const p = ts.split(':').map(Number);
@@ -936,7 +936,7 @@ async function runStage1Chunked(file) {
     for (let i = 0; i < segments.length; i++) {
       const base64 = await fileToBase64(segments[i]);
       setStepStatus('gemini1', 'processing', `辨識第 ${i + 1} / ${segments.length} 段…`);
-      const offsetSec = Math.max(0, i * FFMPEG_SEGMENT_SEC - FFMPEG_OVERLAP_SEC);
+      const offsetSec = i * (FFMPEG_SEGMENT_SEC - FFMPEG_OVERLAP_SEC);
       const rawText = await runStage1(base64, mimeType);
       allTranscripts.push(shiftTranscriptTimestamps(rawText, offsetSec));
     }
@@ -1447,7 +1447,7 @@ function cleanTranscript(transcript) {
   const recentNorms = [];
 
   for (const line of lines) {
-    const norm = line.replace(/^語者\d+\s+[\d:]+\s*/, '').replace(/[「」。，？！、\s]/g, '');
+    const norm = line.replace(/^[\*\-\s]*[^\s]{1,15}\s+[\d:]+\s*/, '').replace(/[「」。，？！、\s]/g, '');
     if (norm.length >= 2) { // 只對有實質內容的行做去重（含2字短句如「好」「對」「濕濕的」）
       const count = recentNorms.filter(n => n === norm).length;
       if (count >= MAX_IN_WINDOW) continue; // 在視窗內已出現 MAX_IN_WINDOW 次，跳過
@@ -1506,7 +1506,7 @@ function extractCharacterNames(transcript) {
   const lines = transcript.split('\n');
   const re = /^([\u4e00-\u9fff]{2,5})[，！、]/;
   for (const line of lines) {
-    if (/^語者\d+\s/.test(line)) continue; // 跳過說話者標籤行
+    if (/^[\*\-\s]*[^\s]{1,15}\s+[\d:]+/.test(line)) continue; // 跳過說話者標籤行
     const m = line.match(re);
     if (m) {
       const name = m[1];
