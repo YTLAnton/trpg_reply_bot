@@ -446,6 +446,29 @@
   </section>
 
 
+  <!-- ══════════════ TRANSCRIPT CONFIRM ══════════════ -->
+  <section id="view-transcript">
+    <div class="section-title">確認逐字稿</div>
+    <div class="section-sub">請檢查辨識結果是否正確。可直接在框內編輯後，按「確認，開始整理」繼續。</div>
+
+    <div class="card" style="margin-bottom:12px; padding:10px 16px; font-size:0.85rem; color:var(--color-muted);" id="transcript-stats"></div>
+
+    <div class="editor-toolbar">
+      <input type="text" id="ts-find-text" placeholder="🔍 尋找...">
+      <input type="text" id="ts-replace-text" placeholder="✏️ 取代為...">
+      <button class="btn btn-secondary btn-sm" id="ts-btn-find-next">找下一個</button>
+      <button class="btn btn-secondary btn-sm" id="ts-btn-replace">取代</button>
+      <button class="btn btn-primary btn-sm" id="ts-btn-replace-all">全部取代</button>
+    </div>
+
+    <textarea id="transcript-editor" class="editor-textarea" style="min-height:60vh; font-size:0.82rem;"></textarea>
+
+    <div class="btn-row" style="margin-top:24px">
+      <button class="btn btn-ghost" id="btn-rerun-stage1">🔄 重新辨識</button>
+      <button class="btn btn-primary" id="btn-confirm-transcript">確認，開始整理 →</button>
+    </div>
+  </section>
+
   <!-- ══════════════ RESULT ══════════════ -->
   <section id="view-result">
     <div id="result-progress-banner" style="display:none; background:var(--color-primary); color:var(--color-text); padding:10px 16px; border-radius:var(--radius); margin-bottom:12px; font-size:0.9rem;"></div>
@@ -640,9 +663,32 @@ function guessMimeType(filename) {
 }
 
 
-const SMALL_FILE_THRESHOLD = 20 * 1024 * 1024;  // ≤20MB 直接 base64
-const CHUNK_DURATION_SEC   = 7 * 60;            // 重採樣後每段送 Gemini 最多 7 分鐘
-const CHUNK_SAMPLE_RATE    = 16000;             // 16kHz mono 語音足夠
+const SMALL_FILE_THRESHOLD = 20 * 1024 * 1024;  // ≤20MB → 路徑0：直接 base64
+const CHUNK_DURATION_SEC   = 7 * 60;             // 路徑1：每段 7 分鐘 WAV
+const CHUNK_SAMPLE_RATE    = 16000;              // 路徑1：16kHz mono
+const PCM_MAX_DURATION_MIN = 120;                // ≤120分鐘 → 路徑1（PCM），否則路徑2
+const FFMPEG_SEGMENT_SEC   = 10 * 60;            // 路徑2：每段 10 分鐘
+const FFMPEG_OVERLAP_SEC   = 30;                 // 路徑2：前後 30 秒 overlap
+
+const FFMPEG_CDNS = {
+  js:   'https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js',
+  core: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js',
+};
+
+// ── 讀取音訊時長（不解碼，只讀 metadata）──
+function getAudioDuration(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const audio = new Audio();
+    audio.preload = 'metadata';
+    audio.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(audio.duration); };
+    audio.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(file.size / (128 * 1024 / 8)); // fallback：估算 128kbps
+    };
+    audio.src = url;
+  });
+}
 
 // ── PCM Float32Array → WAV Blob ──
 function pcmToWav(samples, sampleRate) {
@@ -667,63 +713,206 @@ function pcmToWav(samples, sampleRate) {
   return new Blob([buf], { type: 'audio/wav' });
 }
 
+// ── ffmpeg.wasm singleton（lazy 載入，0.11.x API，無 Worker，無 CORS 問題）──
+let _ffmpegInstance = null;
 
-// ── 大型檔案：逐 12MB 切片解碼 → 重採樣 → 7 分鐘 WAV → Gemini ──
-// 記憶體永遠只持有「目前 slice 的解碼結果」，峰值 ~350MB，與檔案大小無關。
+async function loadFfmpeg() {
+  if (_ffmpegInstance) return _ffmpegInstance;
+  // 動態載入 ffmpeg.min.js（只需一個 script，不會啟動跨域 Worker）
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = FFMPEG_CDNS.js;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('載入 ffmpeg.wasm 失敗，請確認網路連線後重試'));
+    document.head.appendChild(s);
+  });
+  const { createFFmpeg } = window.FFmpeg;
+  const ff = createFFmpeg({
+    corePath: FFMPEG_CDNS.core,
+    log: false,
+  });
+  await ff.load();
+  _ffmpegInstance = ff;
+  return ff;
+}
+
+// ── ffmpeg -c copy 切段，回傳 Blob[]（各段 M4A，含完整 header）──
+async function splitAudioWithFfmpeg(file, onProgress) {
+  const ff  = await loadFfmpeg();
+  const { fetchFile } = window.FFmpeg;
+  const ext = (file.name.split('.').pop() || 'm4a').toLowerCase();
+  const inputName = `input.${ext}`;
+  const mimeType  = guessMimeType(file.name);
+
+  onProgress && onProgress('寫入音訊至 ffmpeg 虛擬空間…');
+  ff.FS('writeFile', inputName, await fetchFile(file));
+
+  const durationSec    = await getAudioDuration(file);
+  const totalSegments  = Math.ceil(durationSec / FFMPEG_SEGMENT_SEC);
+  const blobs = [];
+
+  for (let i = 0; i < totalSegments; i++) {
+    const start   = Math.max(0, i * FFMPEG_SEGMENT_SEC - FFMPEG_OVERLAP_SEC);
+    const isLast  = (i === totalSegments - 1);
+    const segDur  = isLast ? undefined : (FFMPEG_SEGMENT_SEC + FFMPEG_OVERLAP_SEC);
+    const outName = `seg_${String(i).padStart(3, '0')}.${ext}`;
+
+    onProgress && onProgress(`切段 ${i + 1} / ${totalSegments}…`);
+
+    const args = ['-i', inputName, '-ss', String(start)];
+    if (segDur !== undefined) args.push('-t', String(segDur));
+    args.push('-c', 'copy', '-y', outName);
+
+    await ff.run(...args);
+    const data = ff.FS('readFile', outName);
+    blobs.push(new Blob([data.buffer], { type: mimeType }));
+    ff.FS('unlink', outName);
+  }
+
+  ff.FS('unlink', inputName);
+  return blobs;
+}
+
+// ── 依時間戳去重合併各段逐字稿（路徑2 使用）──
+// 每段有 overlap，合併時截掉下一段開頭與上一段重疊的行
+function mergeTranscriptsByTimestamp(transcripts) {
+  if (!transcripts.length) return '';
+
+  const tsRegex = /^語者\d+\s+(\d{1,2}:\d{2}(?::\d{2})?)/;
+
+  function parseTs(ts) {
+    const p = ts.split(':').map(Number);
+    return p.length === 3 ? p[0]*3600 + p[1]*60 + p[2] : p[0]*60 + p[1];
+  }
+
+  function lastTsSec(text) {
+    let last = -1;
+    for (const line of text.split('\n')) {
+      const m = line.match(tsRegex);
+      if (m) last = parseTs(m[1]);
+    }
+    return last;
+  }
+
+  let merged = transcripts[0].trimEnd();
+
+  for (let i = 1; i < transcripts.length; i++) {
+    const prevLast = lastTsSec(merged);
+    const lines    = transcripts[i].split('\n');
+
+    let startLine = 0;
+    if (prevLast >= 0) {
+      let found = false;
+      for (let j = 0; j < lines.length; j++) {
+        const m = lines[j].match(tsRegex);
+        if (m && parseTs(m[1]) > prevLast) {
+          startLine = j;
+          found = true;
+          break;
+        }
+      }
+      // fallback：若找不到更新的時間戳，保留全部（不截斷）
+      if (!found) startLine = 0;
+    }
+
+    const rest = lines.slice(startLine).join('\n').trimEnd();
+    if (rest.trim()) merged += '\n' + rest;
+  }
+
+  return merged;
+}
+
+
+// ── 主控：依檔案大小與時長自動選路 ──
+// 路徑 0（≤20MB）   ：base64 inline_data 直接辨識（不解碼）
+// 路徑 1（>20MB，≤2hr）：PCM decode → 16kHz WAV → 7 分鐘切段（236dfa5 穩定邏輯）
+// 路徑 2（>20MB，>2hr）：ffmpeg.wasm -c copy → 10 分鐘切段 → 時間戳去重合併
 async function runStage1Chunked(file) {
-  // 1. 讀取並解碼整個檔案
-  // 注意：壓縮格式（M4A/AAC/MP4 等）的 codec header 在固定位置，
-  // 不能切成 byte slice 各自解碼，必須整檔 decode 再切 PCM。
-  // 壓縮格式解碼後體積約為檔案大小的 15–25 倍，超過 150MB 時提醒
-  if (file.size > 150 * 1024 * 1024) {
-    setStepStatus('gemini1', 'processing',
-      `⚠ 大型檔案（${formatBytes(file.size)}），解碼可能需要數分鐘，若瀏覽器記憶體不足請先轉換為較低品質 MP3（64kbps）…`);
-    await new Promise(r => setTimeout(r, 100)); // 讓 UI 更新
-  } else {
-    setStepStatus('gemini1', 'processing', `讀取音訊（${formatBytes(file.size)}）…`);
-  }
-  const arrayBuf = await file.arrayBuffer();
 
-  setStepStatus('gemini1', 'processing', '解碼音訊…');
-  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  let decoded;
-  try {
-    decoded = await audioCtx.decodeAudioData(arrayBuf);
-  } catch(e) {
+  // ── 路徑 0：小型檔案 ──
+  if (file.size <= SMALL_FILE_THRESHOLD) {
+    setStepStatus('gemini1', 'processing', `辨識中（${formatBytes(file.size)}）…`);
+    const base64   = await fileToBase64(file);
+    const mimeType = guessMimeType(file.name);
+    return await runStage1(base64, mimeType);
+  }
+
+  // 讀取時長，決定路徑 1 或 2
+  setStepStatus('gemini1', 'processing', '讀取錄音時長…');
+  const durationSec = await getAudioDuration(file);
+  const durationMin = durationSec / 60;
+
+  if (durationMin <= PCM_MAX_DURATION_MIN) {
+    // ── 路徑 1：PCM decode → WAV 切段 ──
+    if (file.size > 150 * 1024 * 1024) {
+      setStepStatus('gemini1', 'processing',
+        `⚠ 大型檔案（${formatBytes(file.size)}），解碼可能需要數分鐘，若記憶體不足請先轉換為較低品質 MP3（64kbps）…`);
+      await new Promise(r => setTimeout(r, 100));
+    } else {
+      setStepStatus('gemini1', 'processing', `讀取音訊（${formatBytes(file.size)}）…`);
+    }
+    const arrayBuf = await file.arrayBuffer();
+
+    setStepStatus('gemini1', 'processing', '解碼音訊…');
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    let decoded;
+    try {
+      decoded = await audioCtx.decodeAudioData(arrayBuf);
+    } catch(e) {
+      audioCtx.close();
+      console.error('[音訊解碼失敗]', e);
+      throw new Error('音訊解碼失敗，請確認格式為 mp3、m4a、wav、ogg、flac 或 aac。');
+    }
     audioCtx.close();
-    console.error('[音訊解碼失敗]', e);
-    throw new Error('音訊解碼失敗，請確認格式為 mp3、m4a、wav、ogg、flac 或 aac。');
+
+    const totalFrames = Math.ceil(decoded.duration * CHUNK_SAMPLE_RATE);
+    setStepStatus('gemini1', 'processing',
+      `重採樣音訊（${Math.round(decoded.duration / 60)} 分鐘）…`);
+    const offCtx = new OfflineAudioContext(1, totalFrames, CHUNK_SAMPLE_RATE);
+    const src = offCtx.createBufferSource();
+    src.buffer = decoded;
+    src.connect(offCtx.destination);
+    src.start(0);
+    const rendered = await offCtx.startRendering();
+    decoded = null; // 釋放原始解碼緩衝區，讓 GC 在後續 API 呼叫時回收
+    const pcm = rendered.getChannelData(0);
+
+    const chunkSamples = CHUNK_SAMPLE_RATE * CHUNK_DURATION_SEC;
+    const numChunks    = Math.ceil(pcm.length / chunkSamples);
+    const allTranscripts = [];
+    for (let ci = 0; ci < numChunks; ci++) {
+      const wavBlob = pcmToWav(pcm.slice(ci * chunkSamples, (ci + 1) * chunkSamples), CHUNK_SAMPLE_RATE);
+      const base64  = await fileToBase64(wavBlob);
+      setStepStatus('gemini1', 'processing', `辨識第 ${ci + 1} / ${numChunks} 段…`);
+      allTranscripts.push(await runStage1(base64, 'audio/wav'));
+    }
+    return allTranscripts.map(t => t.trimEnd()).filter(t => t.trim()).join('\n');
+
+  } else {
+    // ── 路徑 2：ffmpeg.wasm 切段 ──
+    // 先確認 SharedArrayBuffer 是否可用（需 COOP/COEP Header，即 Service Worker 已激活）
+    if (typeof SharedArrayBuffer === 'undefined') {
+      throw new Error(
+        '⚠️ 超長錄音（> 2 小時）需要以 http://localhost 或 https:// 開啟此頁面才能使用。\n\n' +
+        '請在專案目錄下執行：python -m http.server 8080\n' +
+        '然後前往 http://localhost:8080\n\n' +
+        '（用 file:// 直接開啟時，瀏覽器的安全機制會停用必要的 SharedArrayBuffer 功能。）'
+      );
+    }
+    setStepStatus('gemini1', 'processing', '載入 ffmpeg.wasm（首次使用需下載，請稍候）…');
+    const segments = await splitAudioWithFfmpeg(file, (msg) => {
+      setStepStatus('gemini1', 'processing', msg);
+    });
+
+    const mimeType = guessMimeType(file.name);
+    const allTranscripts = [];
+    for (let i = 0; i < segments.length; i++) {
+      const base64 = await fileToBase64(segments[i]);
+      setStepStatus('gemini1', 'processing', `辨識第 ${i + 1} / ${segments.length} 段…`);
+      allTranscripts.push(await runStage1(base64, mimeType));
+    }
+    return mergeTranscriptsByTimestamp(allTranscripts);
   }
-  audioCtx.close();
-
-  // 2. 重採樣為 16kHz mono
-  const totalFrames = Math.ceil(decoded.duration * CHUNK_SAMPLE_RATE);
-  setStepStatus('gemini1', 'processing',
-    `重採樣音訊（${Math.round(decoded.duration / 60)} 分鐘）…`);
-  const offCtx = new OfflineAudioContext(1, totalFrames, CHUNK_SAMPLE_RATE);
-  const src = offCtx.createBufferSource();
-  src.buffer = decoded;
-  src.connect(offCtx.destination);
-  src.start(0);
-  const rendered = await offCtx.startRendering();
-  decoded = null; // 釋放原始解碼緩衝區（可能數 GB），讓 GC 能在後續 API 呼叫時回收
-  const pcm = rendered.getChannelData(0);
-
-  // 3. 切成 7 分鐘 WAV 逐段辨識
-  const chunkSamples = CHUNK_SAMPLE_RATE * CHUNK_DURATION_SEC;
-  const numChunks = Math.ceil(pcm.length / chunkSamples);
-  const allTranscripts = [];
-
-  for (let ci = 0; ci < numChunks; ci++) {
-    const wavBlob = pcmToWav(pcm.slice(ci * chunkSamples, (ci + 1) * chunkSamples), CHUNK_SAMPLE_RATE);
-    const base64  = await fileToBase64(wavBlob);
-    setStepStatus('gemini1', 'processing', `辨識第 ${ci + 1}/${numChunks} 段…`);
-    const chunkTranscript = await runStage1(base64, 'audio/wav');
-    allTranscripts.push(chunkTranscript);
-  }
-
-  // 切段模式：各段 PCM 已是連續不重疊的音訊，不需要 regression 截斷，直接合併
-  return allTranscripts.map(t => t.trimEnd()).filter(t => t.trim()).join('\n');
 }
 
 async function geminiRequest(body, returnMeta = false, maxStopRetries = 9) {
@@ -1400,8 +1589,9 @@ async function runPipeline() {
     return;
   }
 
-  // Step 3: 小說整理
-  await runStage2Pipeline();
+  // Step 3: 暫停，讓使用者確認逐字稿
+  setStepStatus('gemini2', 'pending', '等待確認逐字稿…');
+  showTranscriptView();
 }
 
 // 可從中途步驟重跑
@@ -1417,7 +1607,8 @@ async function runPipelineFrom(fromStep) {
       const spk2 = state.detectedSpeakers.length;
       const lines2 = transcript.split('\n').filter(l => l.trim()).length;
       setStepStatus('gemini1', 'done', `辨識完成，共 ${lines2} 行${spk2 > 0 ? `，${spk2} 位說話者` : ''}`);
-      await runStage2Pipeline();
+      setStepStatus('gemini2', 'pending', '等待確認逐字稿…');
+      showTranscriptView();
     } catch(e) {
       setStepStatus('gemini1', 'error', e.message);
       addStepRetry('gemini1', () => { runPipelineFrom('gemini1'); });
@@ -1474,8 +1665,18 @@ function addStepRetry(stepId, callback) {
 }
 
 // ════════════════════════════════════════
-// 9. Confirm 頁面渲染
+// 9. Transcript Confirm 頁面
 // ════════════════════════════════════════
+
+function showTranscriptView() {
+  const transcript = state.rawTranscript || '';
+  document.getElementById('transcript-editor').value = transcript;
+  const lines = transcript.split('\n').filter(l => l.trim()).length;
+  const spk = state.detectedSpeakers.length;
+  document.getElementById('transcript-stats').textContent =
+    `共 ${lines} 行${spk > 0 ? `，偵測到 ${spk} 位說話者` : ''}`;
+  showView('transcript');
+}
 
 
 // ════════════════════════════════════════
@@ -1685,6 +1886,60 @@ document.getElementById('btn-process').addEventListener('click', () => {
   runPipeline();
 });
 
+document.getElementById('ts-btn-find-next').addEventListener('click', () => {
+  const editor = document.getElementById('transcript-editor');
+  const findText = document.getElementById('ts-find-text').value;
+  if (!findText) return;
+  const currentPos = editor.selectionEnd;
+  const idx = editor.value.indexOf(findText, currentPos);
+  if (idx !== -1) {
+    editor.focus(); editor.setSelectionRange(idx, idx + findText.length);
+  } else {
+    const idx2 = editor.value.indexOf(findText, 0);
+    if (idx2 !== -1) { editor.focus(); editor.setSelectionRange(idx2, idx2 + findText.length); }
+    else { alert('找不到對應的文字'); }
+  }
+});
+
+document.getElementById('ts-btn-replace').addEventListener('click', () => {
+  const editor = document.getElementById('transcript-editor');
+  const findText = document.getElementById('ts-find-text').value;
+  const replaceText = document.getElementById('ts-replace-text').value;
+  if (!findText) return;
+  if (editor.selectionStart !== editor.selectionEnd &&
+      editor.value.substring(editor.selectionStart, editor.selectionEnd) === findText) {
+    editor.setRangeText(replaceText, editor.selectionStart, editor.selectionEnd, 'end');
+    return;
+  }
+  document.getElementById('ts-btn-find-next').click();
+});
+
+document.getElementById('ts-btn-replace-all').addEventListener('click', () => {
+  const editor = document.getElementById('transcript-editor');
+  const findText = document.getElementById('ts-find-text').value;
+  const replaceText = document.getElementById('ts-replace-text').value;
+  if (!findText) return;
+  const newText = editor.value.split(findText).join(replaceText);
+  if (newText !== editor.value) { editor.value = newText; alert('全部取代完畢！'); }
+  else { alert('找不到對應的文字'); }
+});
+
+document.getElementById('btn-confirm-transcript').addEventListener('click', () => {
+  // 把使用者編輯過的逐字稿存回 state
+  const edited = document.getElementById('transcript-editor').value;
+  state.rawTranscript = edited;
+  state.detectedSpeakers = parseSpeakers(edited);
+  resetSteps();
+  setStepStatus('prepare', 'done', state.audioFile ? state.audioFile.name : '（已有逐字稿）');
+  setStepStatus('gemini1', 'done', '逐字稿已確認');
+  runStage2Pipeline();
+});
+
+document.getElementById('btn-rerun-stage1').addEventListener('click', () => {
+  if (!state.audioFile) { showView('upload'); return; }
+  runPipelineFrom('gemini1');
+});
+
 document.getElementById('btn-reprocess').addEventListener('click', () => {
   state.audioFile = null;
   document.getElementById('file-info').style.display = 'none';
@@ -1705,7 +1960,31 @@ document.getElementById('btn-regen').addEventListener('click', () => {
 });
 
 // ════════════════════════════════════════
-// 13. 初始化
+// 13. Service Worker 註冊（COOP/COEP → 解封 SharedArrayBuffer）
+// ════════════════════════════════════════
+
+(function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return; // 老舊瀏覽器直接跳過
+
+  navigator.serviceWorker.register('./sw.js').then((reg) => {
+    // 若 SW 是全新安裝（installing），等它激活後重整頁面，
+    // 使得重整後的請求都帶上 COOP/COEP Header，SharedArrayBuffer 才能真正解封。
+    if (reg.installing) {
+      reg.installing.addEventListener('statechange', (e) => {
+        if (e.target.state === 'activated') {
+          console.log('[SW] 首次激活，自動重整以套用 COOP/COEP Header…');
+          location.reload();
+        }
+      });
+    }
+  }).catch((err) => {
+    // file:// 協定或不支援的環境：靜默失敗，不中斷主流程
+    console.warn('[SW] 無法註冊 Service Worker（可能是 file:// 協定）：', err.message);
+  });
+})();
+
+// ════════════════════════════════════════
+// 14. 初始化
 // ════════════════════════════════════════
 
 (function init() {
