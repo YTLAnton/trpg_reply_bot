@@ -671,9 +671,11 @@ const PCM_MAX_DURATION_MIN = 120;                // ≤120分鐘 → 路徑1（P
 const FFMPEG_SEGMENT_SEC   = 10 * 60;            // 路徑2：每段 10 分鐘
 const FFMPEG_OVERLAP_SEC   = 30;                 // 路徑2：前後 30 秒 overlap
 
+// ffmpeg.wasm 0.12.x — 預設 single-threaded（不需 SharedArrayBuffer），用 Blob URL 載入（繞過 CORS）
 const FFMPEG_CDNS = {
-  js:   'https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js',
-  core: 'https://unpkg.com/@ffmpeg/core-st@0.11.0/dist/ffmpeg-core.js', // ST = single-threaded，不需 SharedArrayBuffer
+  js:   'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/umd/ffmpeg.js',
+  core: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
+  wasm: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
 };
 
 // ── 讀取音訊時長（不解碼，只讀 metadata）──
@@ -714,12 +716,20 @@ function pcmToWav(samples, sampleRate) {
   return new Blob([buf], { type: 'audio/wav' });
 }
 
-// ── ffmpeg.wasm singleton（lazy 載入，0.11.x API，無 Worker，無 CORS 問題）──
+// ── ffmpeg.wasm singleton（lazy 載入，0.12.x API）──
+// 0.12.x 預設 single-threaded，不需 SharedArrayBuffer；
+// 用 toBlobURL 把 CDN 檔案轉成 blob:// URL，Worker 載入時不受 CORS 限制。
 let _ffmpegInstance = null;
+
+async function _toBlobURL(url, mimeType) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`無法載入 ${url}（HTTP ${resp.status}）`);
+  const buf = await resp.arrayBuffer();
+  return URL.createObjectURL(new Blob([buf], { type: mimeType }));
+}
 
 async function loadFfmpeg() {
   if (_ffmpegInstance) return _ffmpegInstance;
-  // 動態載入 ffmpeg.min.js（只需一個 script，不會啟動跨域 Worker）
   await new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = FFMPEG_CDNS.js;
@@ -727,12 +737,12 @@ async function loadFfmpeg() {
     s.onerror = () => reject(new Error('載入 ffmpeg.wasm 失敗，請確認網路連線後重試'));
     document.head.appendChild(s);
   });
-  const { createFFmpeg } = window.FFmpeg;
-  const ff = createFFmpeg({
-    corePath: FFMPEG_CDNS.core,
-    log: false,
+  const { FFmpeg } = window.FFmpegWASM;
+  const ff = new FFmpeg();
+  await ff.load({
+    coreURL: await _toBlobURL(FFMPEG_CDNS.core, 'text/javascript'),
+    wasmURL: await _toBlobURL(FFMPEG_CDNS.wasm, 'application/wasm'),
   });
-  await ff.load();
   _ffmpegInstance = ff;
   return ff;
 }
@@ -740,13 +750,12 @@ async function loadFfmpeg() {
 // ── ffmpeg -c copy 切段，回傳 Blob[]（各段 M4A，含完整 header）──
 async function splitAudioWithFfmpeg(file, onProgress) {
   const ff  = await loadFfmpeg();
-  const { fetchFile } = window.FFmpeg;
   const ext = (file.name.split('.').pop() || 'm4a').toLowerCase();
   const inputName = `input.${ext}`;
   const mimeType  = guessMimeType(file.name);
 
   onProgress && onProgress('寫入音訊至 ffmpeg 虛擬空間…');
-  ff.FS('writeFile', inputName, await fetchFile(file));
+  await ff.writeFile(inputName, new Uint8Array(await file.arrayBuffer()));
 
   const durationSec    = await getAudioDuration(file);
   const totalSegments = Math.ceil(durationSec / (FFMPEG_SEGMENT_SEC - FFMPEG_OVERLAP_SEC));
@@ -764,13 +773,13 @@ async function splitAudioWithFfmpeg(file, onProgress) {
     if (segDur !== undefined) args.push('-t', String(segDur));
     args.push('-c', 'copy', '-y', outName);
 
-    await ff.run(...args);
-    const data = ff.FS('readFile', outName);
+    await ff.exec(args);
+    const data = await ff.readFile(outName);
     blobs.push(new Blob([data.buffer], { type: mimeType }));
-    ff.FS('unlink', outName);
+    await ff.deleteFile(outName);
   }
 
-  ff.FS('unlink', inputName);
+  await ff.deleteFile(inputName);
   return blobs;
 }
 
@@ -1990,11 +1999,15 @@ document.getElementById('btn-regen').addEventListener('click', () => {
 // ════════════════════════════════════════
 
 // 舊版使用 SW 注入 COOP/COEP header 以解封 SharedArrayBuffer。
-// 現已改用 @ffmpeg/core-st（single-threaded），不再需要 SharedArrayBuffer，
-// 也不再需要 SW。主動清除以避免舊 SW 干擾。
+// 現已改用 ffmpeg.wasm 0.12.x + Blob URL，不再需要 SW。
+// 若偵測到舊 SW 仍在控制此頁面，清除後強制重整，確保之後的 fetch 不再被攔截。
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.getRegistrations().then((regs) => {
-    regs.forEach((reg) => reg.unregister());
+    if (regs.length === 0) return;
+    const wasControlled = !!navigator.serviceWorker.controller;
+    Promise.all(regs.map((reg) => reg.unregister())).then(() => {
+      if (wasControlled) location.reload();
+    });
   });
 }
 
