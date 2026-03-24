@@ -739,15 +739,21 @@ async function loadFfmpeg() {
   if (!window._workerCORSPatched) {
     const _OrigWorker = window.Worker;
     window.Worker = function(scriptURL, options) {
-      if (typeof scriptURL === 'string') {
+      // scriptURL 可能是 string 或 URL 物件（webpack 5 傳 URL 物件）
+      const href = scriptURL instanceof URL ? scriptURL.href
+                 : typeof scriptURL === 'string' ? scriptURL
+                 : null;
+      if (href) {
         try {
-          const url = new URL(scriptURL, location.href);
-          if (url.origin !== location.origin) {
+          const parsed = new URL(href, location.href);
+          if (parsed.origin !== location.origin) {
+            // 瀏覽器封鎖跨來源 Worker URL，但 importScripts() 支援 CORS
+            // → 建立 Blob Worker，讓它用 importScripts 載入實際腳本
             const blob = new Blob(
-              [`importScripts(${JSON.stringify(url.href)})`],
+              [`importScripts(${JSON.stringify(parsed.href)})`],
               { type: 'text/javascript' }
             );
-            scriptURL = URL.createObjectURL(blob);
+            return new _OrigWorker(URL.createObjectURL(blob), options);
           }
         } catch (e) { /* URL 解析失敗，原樣傳遞 */ }
       }
