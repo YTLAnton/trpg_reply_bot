@@ -730,6 +730,33 @@ async function _toBlobURL(url, mimeType) {
 
 async function loadFfmpeg() {
   if (_ffmpegInstance) return _ffmpegInstance;
+
+  // ── Worker 跨來源 Patch ──
+  // 瀏覽器封鎖 `new Worker('https://other-origin/...')`，
+  // 但 Worker 內的 importScripts() 支援 CORS，可跨來源載入。
+  // ffmpeg.wasm 0.12.x 的 UMD build 內部會用 CDN URL 建立 Worker，
+  // 此 patch 將跨來源 URL 改包成 Blob Worker 以繞過限制。
+  if (!window._workerCORSPatched) {
+    const _OrigWorker = window.Worker;
+    window.Worker = function(scriptURL, options) {
+      if (typeof scriptURL === 'string') {
+        try {
+          const url = new URL(scriptURL, location.href);
+          if (url.origin !== location.origin) {
+            const blob = new Blob(
+              [`importScripts(${JSON.stringify(url.href)})`],
+              { type: 'text/javascript' }
+            );
+            scriptURL = URL.createObjectURL(blob);
+          }
+        } catch (e) { /* URL 解析失敗，原樣傳遞 */ }
+      }
+      return new _OrigWorker(scriptURL, options);
+    };
+    window.Worker.prototype = _OrigWorker.prototype;
+    window._workerCORSPatched = true;
+  }
+
   await new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = FFMPEG_CDNS.js;
