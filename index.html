@@ -2,6 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
+  <link rel="icon" href="data:,">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TRPG 團錄轉寫器</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -672,7 +673,7 @@ const FFMPEG_OVERLAP_SEC   = 30;                 // 路徑2：前後 30 秒 over
 
 const FFMPEG_CDNS = {
   js:   'https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js',
-  core: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js',
+  core: 'https://unpkg.com/@ffmpeg/core-st@0.11.0/dist/ffmpeg-core.js', // ST = single-threaded，不需 SharedArrayBuffer
 };
 
 // ── 讀取音訊時長（不解碼，只讀 metadata）──
@@ -916,16 +917,7 @@ async function runStage1Chunked(file) {
     return allTranscripts.map(t => t.trimEnd()).filter(t => t.trim()).join('\n');
 
   } else {
-    // ── 路徑 2：ffmpeg.wasm 切段 ──
-    // 先確認 SharedArrayBuffer 是否可用（需 COOP/COEP Header，即 Service Worker 已激活）
-    if (typeof SharedArrayBuffer === 'undefined') {
-      throw new Error(
-        '⚠️ 超長錄音（> 2 小時）需要以 http://localhost 或 https:// 開啟此頁面才能使用。\n\n' +
-        '請在專案目錄下執行：python -m http.server 8080\n' +
-        '然後前往 http://localhost:8080\n\n' +
-        '（用 file:// 直接開啟時，瀏覽器的安全機制會停用必要的 SharedArrayBuffer 功能。）'
-      );
-    }
+    // ── 路徑 2：ffmpeg.wasm 切段（single-threaded core，無需 SharedArrayBuffer）──
     setStepStatus('gemini1', 'processing', '載入 ffmpeg.wasm（首次使用需下載，請稍候）…');
     const segments = await splitAudioWithFfmpeg(file, (msg) => {
       setStepStatus('gemini1', 'processing', msg);
@@ -1994,28 +1986,17 @@ document.getElementById('btn-regen').addEventListener('click', () => {
 });
 
 // ════════════════════════════════════════
-// 13. Service Worker 註冊（COOP/COEP → 解封 SharedArrayBuffer）
+// 13. 清除舊版 Service Worker（已不再需要）
 // ════════════════════════════════════════
 
-(function registerServiceWorker() {
-  if (!('serviceWorker' in navigator)) return; // 老舊瀏覽器直接跳過
-
-  navigator.serviceWorker.register('./sw.js').then((reg) => {
-    // 若 SW 是全新安裝（installing），等它激活後重整頁面，
-    // 使得重整後的請求都帶上 COOP/COEP Header，SharedArrayBuffer 才能真正解封。
-    if (reg.installing) {
-      reg.installing.addEventListener('statechange', (e) => {
-        if (e.target.state === 'activated') {
-          console.log('[SW] 首次激活，自動重整以套用 COOP/COEP Header…');
-          location.reload();
-        }
-      });
-    }
-  }).catch((err) => {
-    // file:// 協定或不支援的環境：靜默失敗，不中斷主流程
-    console.warn('[SW] 無法註冊 Service Worker（可能是 file:// 協定）：', err.message);
+// 舊版使用 SW 注入 COOP/COEP header 以解封 SharedArrayBuffer。
+// 現已改用 @ffmpeg/core-st（single-threaded），不再需要 SharedArrayBuffer，
+// 也不再需要 SW。主動清除以避免舊 SW 干擾。
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then((regs) => {
+    regs.forEach((reg) => reg.unregister());
   });
-})();
+}
 
 // ════════════════════════════════════════
 // 14. 初始化
