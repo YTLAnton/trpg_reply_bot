@@ -366,15 +366,27 @@
     </div>
 
     <div class="card">
-      <div class="card-title">⚙ Gemini 模型</div>
-      <label for="input-model-select">請選擇或自訂 Model ID，推薦使用 <strong>gemini-2.5-flash</strong></label>
-      <select id="input-model-select" style="margin-bottom: 8px;">
-        <option value="gemini-2.5-flash">gemini-2.5-flash (推薦：速度與成本最佳平衡)</option>
-        <option value="gemini-2.5-pro">gemini-2.5-pro (推薦：文學性與邏輯推演最強)</option>
-        <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (極輕量版)</option>
+      <div class="card-title">⚙ Stage 1 模型｜語音辨識</div>
+      <label for="input-model-s1-select">辨識音訊、說話者分離，推薦使用 <strong>gemini-2.5-flash</strong></label>
+      <select id="input-model-s1-select" style="margin-bottom: 8px;">
+        <option value="gemini-2.5-flash">gemini-2.5-flash（推薦：速度與成本最佳平衡）</option>
+        <option value="gemini-2.5-pro">gemini-2.5-pro（最高精準度，費用較高）</option>
+        <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite（極輕量版）</option>
         <option value="custom">自訂模型 (Custom Model)</option>
       </select>
-      <input type="text" id="input-model" placeholder="若選自訂，請在此填寫模型 ID (例如：gemini-exp-1206)" style="display: none;">
+      <input type="text" id="input-model-s1-custom" placeholder="若選自訂，請在此填寫模型 ID (例如：gemini-exp-1206)" style="display: none;">
+    </div>
+
+    <div class="card">
+      <div class="card-title">⚙ Stage 2 模型｜團錄整理</div>
+      <label for="input-model-s2-select">逐字稿改寫成小說，推薦使用 <strong>gemini-2.5-pro</strong></label>
+      <select id="input-model-s2-select" style="margin-bottom: 8px;">
+        <option value="gemini-2.5-pro">gemini-2.5-pro（推薦：文學性與邏輯推演最強）</option>
+        <option value="gemini-2.5-flash">gemini-2.5-flash（速度快，費用低）</option>
+        <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite（極輕量版）</option>
+        <option value="custom">自訂模型 (Custom Model)</option>
+      </select>
+      <input type="text" id="input-model-s2-custom" placeholder="若選自訂，請在此填寫模型 ID (例如：gemini-exp-1206)" style="display: none;">
     </div>
 
     <div class="btn-row">
@@ -502,7 +514,8 @@
 const state = {
   config: {
     geminiKey: '',
-    geminiModel: 'gemini-2.5-flash',
+    geminiModel:   'gemini-2.5-flash',
+    geminiModelS2: 'gemini-2.5-pro',
   },
 
   currentState: 'setup',
@@ -549,21 +562,24 @@ function showView(name) {
 // 3. 設定頁渲染
 // ════════════════════════════════════════
 
-function initSetupView() {
-  document.getElementById('input-key').value = state.config.geminiKey || '';
-  const currentModel = state.config.geminiModel || 'gemini-2.5-flash';
-  const selectEl = document.getElementById('input-model-select');
-  const inputEl = document.getElementById('input-model');
-  
-  if (Array.from(selectEl.options).some(opt => opt.value === currentModel)) {
-    selectEl.value = currentModel;
+function initModelSelect(selectId, customInputId, savedModel) {
+  const selectEl = document.getElementById(selectId);
+  const inputEl  = document.getElementById(customInputId);
+  if (Array.from(selectEl.options).some(opt => opt.value === savedModel)) {
+    selectEl.value = savedModel;
     inputEl.style.display = 'none';
-    inputEl.value = currentModel;
+    inputEl.value = savedModel;
   } else {
     selectEl.value = 'custom';
     inputEl.style.display = 'block';
-    inputEl.value = currentModel;
+    inputEl.value = savedModel;
   }
+}
+
+function initSetupView() {
+  document.getElementById('input-key').value = state.config.geminiKey || '';
+  initModelSelect('input-model-s1-select', 'input-model-s1-custom', state.config.geminiModel   || 'gemini-2.5-flash');
+  initModelSelect('input-model-s2-select', 'input-model-s2-custom', state.config.geminiModelS2 || 'gemini-2.5-pro');
 }
 
 // ════════════════════════════════════════
@@ -653,8 +669,9 @@ function resetSteps() {
 // 6. Gemini API 呼叫
 // ════════════════════════════════════════
 
-function getGeminiEndpoint() {
-  return `https://generativelanguage.googleapis.com/v1beta/models/${state.config.geminiModel}:generateContent`;
+function getGeminiEndpoint(useS2 = false) {
+  const model = useS2 ? (state.config.geminiModelS2 || 'gemini-2.5-pro') : (state.config.geminiModel || 'gemini-2.5-flash');
+  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 }
 
 function guessMimeType(filename) {
@@ -978,7 +995,7 @@ async function runStage1Chunked(file) {
   }
 }
 
-async function geminiRequest(body, returnMeta = false, maxStopRetries = 9) {
+async function geminiRequest(body, returnMeta = false, maxStopRetries = 9, useS2 = false) {
   const errMap = {
     400: '音訊格式不支援或請求格式錯誤。',
     403: 'API Key 無效或權限不足，請至設定頁重新填入。',
@@ -995,7 +1012,7 @@ async function geminiRequest(body, returnMeta = false, maxStopRetries = 9) {
 
   let delay = 15000; // 初始等待 15 秒
   for (let attempt = 1; attempt <= 10; attempt++) {
-    const res = await fetch(getGeminiEndpoint(), {
+    const res = await fetch(getGeminiEndpoint(useS2), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1466,7 +1483,7 @@ ${transcriptChunk}`;
   };
 
   // maxStopRetries=1：Stage 2 的空白回應重試一次即可，避免每段浪費 9 次
-  return await geminiRequest(body, false, 1);
+  return await geminiRequest(body, false, 1, true);
 }
 
 // 清理 Stage 1 逐字稿：用滑動視窗移除交替重複行（炸裂/雜音）
@@ -1832,8 +1849,8 @@ document.getElementById('btn-toggle-key').addEventListener('click', function() {
 
 document.getElementById('btn-test-api').addEventListener('click', async () => {
   const key = document.getElementById('input-key').value.trim();
-  const selectVal = document.getElementById('input-model-select').value;
-  const model = selectVal === 'custom' ? document.getElementById('input-model').value.trim() : selectVal;
+  const s1SelectVal = document.getElementById('input-model-s1-select').value;
+  const model = s1SelectVal === 'custom' ? document.getElementById('input-model-s1-custom').value.trim() : s1SelectVal;
   const alertEl = document.getElementById('alert-test');
   if (!key) {
     alertEl.textContent = '請先填入 API Key。';
@@ -1875,10 +1892,13 @@ document.getElementById('btn-test-api').addEventListener('click', async () => {
 document.getElementById('btn-save-config').addEventListener('click', () => {
   try {
     state.config.geminiKey = document.getElementById('input-key').value.trim();
-    const selectVal = document.getElementById('input-model-select').value;
-    state.config.geminiModel = selectVal === 'custom' ? document.getElementById('input-model').value.trim() : selectVal;
-    
-    if (!state.config.geminiModel) throw new Error("模型名稱不得為空");
+    const s1Val = document.getElementById('input-model-s1-select').value;
+    const s2Val = document.getElementById('input-model-s2-select').value;
+    state.config.geminiModel   = s1Val === 'custom' ? document.getElementById('input-model-s1-custom').value.trim() : s1Val;
+    state.config.geminiModelS2 = s2Val === 'custom' ? document.getElementById('input-model-s2-custom').value.trim() : s2Val;
+
+    if (!state.config.geminiModel)   throw new Error("Stage 1 模型名稱不得為空");
+    if (!state.config.geminiModelS2) throw new Error("Stage 2 模型名稱不得為空");
     
     localStorage.setItem('trpg_config', JSON.stringify(state.config));
     const btn = document.getElementById('btn-save-config');
@@ -1893,8 +1913,10 @@ document.getElementById('btn-save-config').addEventListener('click', () => {
 document.getElementById('btn-start').addEventListener('click', () => {
   try {
     state.config.geminiKey = document.getElementById('input-key').value.trim();
-    const selectVal = document.getElementById('input-model-select').value;
-    state.config.geminiModel = selectVal === 'custom' ? document.getElementById('input-model').value.trim() : selectVal;
+    const s1Val = document.getElementById('input-model-s1-select').value;
+    const s2Val = document.getElementById('input-model-s2-select').value;
+    state.config.geminiModel   = s1Val === 'custom' ? document.getElementById('input-model-s1-custom').value.trim() : s1Val;
+    state.config.geminiModelS2 = s2Val === 'custom' ? document.getElementById('input-model-s2-custom').value.trim() : s2Val;
 
     if (!state.config.geminiKey) {
       document.getElementById('alert-key').className = 'alert error show';
@@ -1909,17 +1931,21 @@ document.getElementById('btn-start').addEventListener('click', () => {
   }
 });
 
-document.getElementById('input-model-select').addEventListener('change', function() {
-  const inputEl = document.getElementById('input-model');
-  if (this.value === 'custom') {
-    inputEl.style.display = 'block';
-    inputEl.value = '';
-    inputEl.focus();
-  } else {
-    inputEl.style.display = 'none';
-    inputEl.value = this.value;
-  }
-});
+function bindModelSelectChange(selectId, customInputId) {
+  document.getElementById(selectId).addEventListener('change', function() {
+    const inputEl = document.getElementById(customInputId);
+    if (this.value === 'custom') {
+      inputEl.style.display = 'block';
+      inputEl.value = '';
+      inputEl.focus();
+    } else {
+      inputEl.style.display = 'none';
+      inputEl.value = this.value;
+    }
+  });
+}
+bindModelSelectChange('input-model-s1-select', 'input-model-s1-custom');
+bindModelSelectChange('input-model-s2-select', 'input-model-s2-custom');
 
 // ── Upload view ──
 const uploadZone = document.getElementById('upload-zone');
